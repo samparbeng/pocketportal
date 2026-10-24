@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.PocketPortalQuest" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:colorAccent">@color/accent</item>
+    </style>
+    <color name="background">#FF101418</color>
+    <color name="accent">#FF4FA3FF</color>
+</resources>

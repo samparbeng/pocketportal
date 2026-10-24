@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Pocket Portal</string>
+    <string name="touch_service_label">Pocket Portal remote touch</string>
+    <string name="touch_service_description">Lets you control this phone from your VR headset while Pocket Portal is sharing the screen. It performs only the taps, swipes and key presses you make in the headset viewer, and it reads the text box you are typing into so it can add your text. Nothing is stored or sent anywhere except to your own headset on your Wi-Fi.</string>
+    <!-- Set this once store/privacy-policy.html is hosted (see PLAY_STORE.md); the link stays hidden while empty. -->
+    <string name="privacy_policy_url" translatable="false">https://samparbeng.github.io/pocketportal/privacy/</string>
+</resources>

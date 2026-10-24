@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Pocket Portal</title>
+<style>
+  :root { --bg:#0b0e12; --panel:#161c23; --line:#26303b; --text:#e8edf2; --muted:#9aa6b2; --accent:#4fa3ff; --warn:#ffb74d; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; min-height:100vh; background:var(--bg); color:var(--text); font:16px/1.4 system-ui, sans-serif; overflow:hidden; }
+  body { display:flex; flex-direction:column; }
+  #stage { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; position:relative; }
+  canvas { touch-action:none; cursor:pointer; border-radius:18px; background:#000; box-shadow:0 0 0 1px var(--line); }
+  #bar { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; padding:10px; background:var(--panel); border-top:1px solid var(--line); }
+  button { font:inherit; color:var(--text); background:#212a34; border:1px solid var(--line); border-radius:12px; padding:12px 18px; min-width:64px; cursor:pointer; }
+  button:hover { background:#2b3642; }
+  button:active { background:var(--accent); color:#000; }
+  #typebar { display:none; gap:8px; padding:10px; background:var(--panel); border-top:1px solid var(--line); }
+  #typebar.open { display:flex; }
+  #typebar input { flex:1; font:inherit; color:var(--text); background:#0f1419; border:1px solid var(--line); border-radius:12px; padding:12px; }
+  #status { position:absolute; top:12px; left:50%; transform:translateX(-50%); background:rgba(22,28,35,.92); border:1px solid var(--line); border-radius:999px; padding:6px 16px; color:var(--muted); font-size:14px; white-space:nowrap; }
+  #status.warn { color:var(--warn); }
+  #status:empty { display:none; }
+  #pin { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:var(--bg); }
+  #pin.open { display:flex; }
+  #pin form { background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:28px; width:min(360px, calc(100% - 32px)); display:flex; flex-direction:column; gap:14px; }
+  #pin h1 { margin:0; font-size:22px; }
+  #pin p { margin:0; color:var(--muted); }
+  #pin input { font:28px/1 ui-monospace, monospace; letter-spacing:.3em; text-align:center; color:var(--text); background:#0f1419; border:1px solid var(--line); border-radius:12px; padding:12px; }
+  #pinError { color:var(--warn); min-height:1.4em; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="screen" width="9" height="16"></canvas>
+  <div id="status">Connecting…</div>
+  <div id="pin">
+    <form id="pinForm">
+      <h1>Pocket Portal</h1>
+      <p>Enter the PIN shown in the Pocket Portal app on your phone.</p>
+      <input id="pinInput" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••••">
+      <div id="pinError"></div>
+      <button type="submit">Connect</button>
+    </form>
+  </div>
+</div>
+<div id="typebar">
+  <input id="text" placeholder="Type here, press Enter to send to the phone" autocomplete="off">
+  <button data-send="backspace" title="Delete last character">⌫</button>
+  <button data-send="enter" title="Enter / Go">⏎</button>
+</div>
+<div id="bar">
+  <button data-key="back">◀ Back</button>
+  <button data-key="home">● Home</button>
+  <button data-key="recents">▮▮ Recents</button>
+  <button data-key="notifications">Notifications</button>
+  <button data-key="quick">Quick settings</button>
+  <button id="kbd">⌨ Keyboard</button>
+  <button id="full">⛶ Full screen</button>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('screen');
+  const ctx = canvas.getContext('2d');
+  const stage = document.getElementById('stage');
+  const statusEl = document.getElementById('status');
+  const pinBox = document.getElementById('pin');
+  let ws = null, inputOn = true, drawing = Promise.resolve(), retry = null;
+
+  const store = {
+    get() { try { return localStorage.getItem('pocketportal-pin') || ''; } catch { return ''; } },
+    set(v) { try { v ? localStorage.setItem('pocketportal-pin', v) : localStorage.removeItem('pocketportal-pin'); } catch {} },
+  };
+  let pin = location.hash.slice(1) || store.get();
+
+  function setStatus(text, warn) {
+    statusEl.textContent = text;
+    statusEl.classList.toggle('warn', !!warn);
+  }
+  function showStatus() {
+    setStatus(inputOn ? '' : 'View only: switch on "Pocket Portal remote touch" on the phone to control it', !inputOn);
+  }
+
+  function askPin(message) {
+    pinBox.classList.add('open');
+    document.getElementById('pinError').textContent = message || '';
+    document.getElementById('pinInput').focus();
+  }
+  document.getElementById('pinForm').addEventListener('submit', e => {
+    e.preventDefault();
+    pin = document.getElementById('pinInput').value.trim();
+    if (!pin) return;
+    pinBox.classList.remove('open');
+    connect();
+  });
+
+  function connect() {
+    clearTimeout(retry);
+    if (!pin) return askPin();
+    setStatus('Connecting…');
+    ws = new WebSocket(`ws://${location.host}/ws?k=${encodeURIComponent(pin)}`);
+    ws.binaryType = 'arraybuffer';
+    // The phone only says hello after the PIN checks out, so that's when it's worth saving.
+    let accepted = false, opened = false;
+    ws.onopen = () => { opened = true; };
+    ws.onmessage = e => {
+      if (typeof e.data === 'string') {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'hello') {
+          if (!accepted) { accepted = true; store.set(pin); }
+          inputOn = msg.input; showStatus();
+        }
+        return;
+      }
+      const data = e.data, socket = ws;
+      // Decode in arrival order, then ack so the phone sends the next frame.
+      drawing = drawing.then(async () => {
+        try {
+          const bmp = await createImageBitmap(new Blob([data], { type: 'image/jpeg' }));
+          if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+            canvas.width = bmp.width; canvas.height = bmp.height; layout();
+          }
+          ctx.drawImage(bmp, 0, 0);
+          bmp.close();
+        } catch (err) { console.warn(err); }
+        if (socket.readyState === 1) socket.send('a');
+      });
+    };
+    ws.onclose = e => {
+      // A refused PIN closes with 4001; older phone builds lose that code, but they
+      // also never say hello, so an accepted-then-silent close means the same thing.
+      if (e.code === 4001 || (opened && !accepted)) {
+        pin = ''; store.set('');
+        if (window.PocketPortalApp) return window.PocketPortalApp.wrongPin();
+        return askPin('Wrong PIN, try again.');
+      }
+      setStatus('Phone not reachable. Is Pocket Portal sharing? Retrying…', true);
+      retry = setTimeout(connect, 1500);
+    };
+  }
+  setInterval(() => { if (ws && ws.readyState === 1) ws.send('p'); }, 10000);
+
+  function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  // Fit the phone picture into the space above the toolbar, keeping its shape.
+  function layout() {
+    const r = stage.getBoundingClientRect();
+    const scale = Math.min((r.width - 24) / canvas.width, (r.height - 24) / canvas.height);
+    canvas.style.width = Math.max(1, canvas.width * scale) + 'px';
+    canvas.style.height = Math.max(1, canvas.height * scale) + 'px';
+  }
+  addEventListener('resize', layout);
+  layout();
+
+  // Pointer input: a quick click is a tap, a still hold is a long press, anything else a swipe.
+  let stroke = null;
+  function norm(e) {
+    const r = canvas.getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
+  }
+  canvas.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    canvas.setPointerCapture(e.pointerId);
+    stroke = { pts: [norm(e)], x: e.clientX, y: e.clientY, t0: performance.now(), moved: false, last: 0 };
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!stroke) return;
+    if (Math.hypot(e.clientX - stroke.x, e.clientY - stroke.y) > 8) stroke.moved = true;
+    const now = performance.now();
+    if (stroke.moved && now - stroke.last > 16) { stroke.pts.push(norm(e)); stroke.last = now; }
+  });
+  canvas.addEventListener('pointerup', e => {
+    if (!stroke) return;
+    const s = stroke; stroke = null;
+    const ms = Math.round(performance.now() - s.t0);
+    const [x, y] = s.pts[0];
+    if (!s.moved) {
+      send(ms > 450 ? { t: 'press', x, y, ms: Math.max(ms, 600) } : { t: 'tap', x, y });
+      return;
+    }
+    s.pts.push(norm(e));
+    // Keep gestures small: at most 60 points.
+    const step = Math.max(1, Math.ceil(s.pts.length / 60));
+    const pts = s.pts.filter((_, i) => i % step === 0 || i === s.pts.length - 1);
+    send({ t: 'swipe', pts, ms: Math.min(Math.max(ms, 80), 4000) });
+  });
+  canvas.addEventListener('pointercancel', () => { stroke = null; });
+  canvas.addEventListener('contextmenu', e => { e.preventDefault(); send({ t: 'key', k: 'back' }); });
+
+  // Thumbstick / mouse wheel scrolls the phone with a short swipe.
+  let wheelAt = 0;
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const now = performance.now();
+    if (now - wheelAt < 250 || !e.deltaY) return;
+    wheelAt = now;
+    const [x, y] = norm(e);
+    const dy = Math.sign(e.deltaY) * 0.25;
+    const y0 = Math.min(0.85, Math.max(0.15, y));
+    send({ t: 'swipe', pts: [[x, y0], [x, Math.min(0.95, Math.max(0.05, y0 - dy))]], ms: 180 });
+  }, { passive: false });
+
+  document.querySelectorAll('[data-key]').forEach(b => b.addEventListener('click', () => send({ t: 'key', k: b.dataset.key })));
+  document.querySelectorAll('[data-send]').forEach(b => b.addEventListener('click', () => send({ t: b.dataset.send })));
+
+  const typebar = document.getElementById('typebar'), text = document.getElementById('text');
+  document.getElementById('kbd').addEventListener('click', () => {
+    typebar.classList.toggle('open');
+    layout();
+    if (typebar.classList.contains('open')) text.focus();
+  });
+  text.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (text.value) { send({ t: 'text', s: text.value }); text.value = ''; }
+      else send({ t: 'enter' });
+    }
+  });
+
+  document.getElementById('full').addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  });
+  document.addEventListener('fullscreenchange', () => setTimeout(layout, 50));
+
+  // The Quest app's panel is already its own window, so full screen does nothing useful there.
+  if (/PocketPortalQuest/.test(navigator.userAgent)) document.getElementById('full').remove();
+
+  if (location.hash) history.replaceState(null, '', location.pathname);
+  connect();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+<defs>
+  <linearGradient id="frame" x1="37" y1="22" x2="71" y2="86" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#E3E7EE"/><stop offset="1" stop-color="#8B93A3"/></linearGradient>
+  <linearGradient id="wall" x1="40.6" y1="25" x2="67.4" y2="83" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3D7BFF"/><stop offset="0.5" stop-color="#6A4CFF"/><stop offset="1" stop-color="#B04CE8"/></linearGradient>
+</defs>
+<symbol id="phone" viewBox="0 0 108 108">
+  <path fill="url(#frame)" d="M45,22h18a8,8 0,0 1,8 8v48a8,8 0,0 1,-8 8h-18a8,8 0,0 1,-8 -8v-48a8,8 0,0 1,8 -8z"/>
+  <path fill="#05070B" d="M45.6,23.4h16.8a6.8,6.8 0,0 1,6.8 6.8v47.6a6.8,6.8 0,0 1,-6.8 6.8h-16.8a6.8,6.8 0,0 1,-6.8 -6.8v-47.6a6.8,6.8 0,0 1,6.8 -6.8z"/>
+  <path fill="url(#wall)" d="M46.2,25h15.6a5.6,5.6 0,0 1,5.6 5.6v46.8a5.6,5.6 0,0 1,-5.6 5.6h-15.6a5.6,5.6 0,0 1,-5.6 -5.6v-46.8a5.6,5.6 0,0 1,5.6 -5.6z"/>
+  <path fill="#FFFFFF" fill-opacity="0.25" d="M40.6,58c6,-6 12,-2 17,-6s7,-7 9.8,-8v12c-4,1 -6,5 -11,7s-10,-1 -15.8,4z"/>
+  <path fill="#FFFFFF" fill-opacity="0.15" d="M40.6,70c7,-5 13,0 18,-4s6,-6 8.8,-6v17.4a5.6,5.6 0,0 1,-5.6 5.6h-15.6a5.6,5.6 0,0 1,-5.6 -5.6z"/>
+  <circle cx="54" cy="28.4" r="1.5" fill="#05070B"/>
+  <path fill="#B7BDC8" d="M71,38h0.9a0.6,0.6 0,0 1,0.6 0.6v8.8a0.6,0.6 0,0 1,-0.6 0.6h-0.9z"/>
+  <path fill="#B7BDC8" d="M71,51h0.9a0.6,0.6 0,0 1,0.6 0.6v4.8a0.6,0.6 0,0 1,-0.6 0.6h-0.9z"/>
+</symbol>
