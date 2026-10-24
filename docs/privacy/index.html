@@ -21,15 +21,16 @@
 <body>
 <main>
 <h1>Pocket Portal Privacy Policy</h1>
-<p class="muted">Effective 24 October 2026. Applies to the Pocket Portal app for Android phones and the Pocket Portal app for VR headsets.</p>
+<p class="muted">Effective 24 October 2026 (updated to cover optional sound streaming). Applies to the Pocket Portal app for Android phones and the Pocket Portal app for VR headsets.</p>
 
 <h2>The short version</h2>
-<p>Pocket Portal shows your phone's screen in your own VR headset and lets you control the phone from there. Everything travels directly between your phone and your headset on your local Wi-Fi network. We have no servers. Pocket Portal doesn't collect, store, sell or share your personal data, and it contains no ads, analytics or tracking.</p>
+<p>Pocket Portal shows your phone's screen, and optionally plays its sound, in your own VR headset and lets you control the phone from there. Everything travels directly between your phone and your headset on your local Wi-Fi network. We have no servers. Pocket Portal doesn't collect, store, sell or share your personal data, and it contains no ads, analytics or tracking.</p>
 
 <h2>What the app handles, and why</h2>
 <table>
   <tr><th>Information</th><th>Why</th><th>Where it goes</th></tr>
   <tr><td>Your phone's screen (live images)</td><td>To show the phone inside your headset while you're sharing.</td><td>Sent only to headsets on your local network that enter the correct PIN. Not recorded or stored.</td></tr>
+  <tr><td>Sound your phone is playing (optional, "Stream sound")</td><td>To play the phone's media and game sound in your headset while you're sharing.</td><td>Sent only to your connected headset, like the screen. Not recorded or stored. Calls are never captured, and the microphone isn't used.</td></tr>
   <tr><td>Taps, swipes, key presses and text you enter in the headset</td><td>To control the phone from the headset (remote touch).</td><td>Sent from your headset to your phone and performed there. Not stored.</td></tr>
   <tr><td>The text box you're typing into</td><td>When you type in the headset, remote touch reads the focused text box so it can add your text.</td><td>Stays on the phone. Not stored or sent anywhere.</td></tr>
   <tr><td>Your phone's device name and local IP address</td><td>So the headset app can list your phone without you typing its address.</td><td>Announced on your local network (mDNS) only while sharing is on.</td></tr>
@@ -50,6 +51,7 @@
 <h2>Permissions</h2>
 <ul>
   <li><strong>Local network / nearby devices:</strong> to accept connections from your headset on your Wi-Fi.</li>
+  <li><strong>Audio recording ("Microphone" in Android settings):</strong> Android requires this permission to capture the sound other apps are playing. Pocket Portal never turns on or records the microphone. Switch off "Stream sound" in the app to stop all sound capture.</li>
   <li><strong>Internet and Wi-Fi state:</strong> to run the local connection and show your phone's Wi-Fi address. Pocket Portal doesn't connect to any server on the internet.</li>
   <li><strong>Notifications and foreground service:</strong> to show the ongoing "sharing" notification with a Stop button.</li>
 </ul>

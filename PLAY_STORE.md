@@ -74,8 +74,14 @@ no server. The accurate answers are:
 - Account creation / deletion: the app has no accounts.
 
 If a reviewer pushes back and insists the screen stream counts as collection, change it to
-*Collected: Photos and videos → "Other" (screen images), App activity → "Other actions"*,
-processed ephemerally, not shared, required for functionality, user can't opt out.
+*Collected: Photos and videos → "Other" (screen images), Audio → "Other audio files" (phone
+sound, only with Stream sound on), App activity → "Other actions"*, processed ephemerally,
+not shared, required for functionality (sound: optional).
+
+**About `RECORD_AUDIO`:** it's there only for *Stream sound*, which uses Android's audio playback
+capture through the same screen-sharing session. The microphone is never opened. Play may
+ask about it. The answer: *"Captures other apps' playback audio via AudioPlaybackCaptureConfiguration
+so the user hears their phone in their own headset; no microphone input, nothing stored or uploaded."*
 
 ## 5. Sensitive permission declarations (Policy → App content)
 

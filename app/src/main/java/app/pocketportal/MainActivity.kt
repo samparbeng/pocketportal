@@ -32,6 +32,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -41,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -85,6 +87,7 @@ private fun MirrorScreen() {
     val touch by MirrorState.touchEnabled.collectAsStateWithLifecycle()
     val pin by MirrorState.pin.collectAsStateWithLifecycle()
     val quality by MirrorState.quality.collectAsStateWithLifecycle()
+    val sound by MirrorState.sound.collectAsStateWithLifecycle()
     val error by MirrorState.error.collectAsStateWithLifecycle()
     var showDisclosure by remember { mutableStateOf(false) }
 
@@ -118,6 +121,8 @@ private fun MirrorScreen() {
             MirrorState.error.value = "Pocket Portal needs the \"Nearby devices\" / local network permission, " +
                 "or the headset can't connect. Allow it in App info → Permissions."
         } else {
+            // Without the audio permission, sharing still works, just silently.
+            if (result[Manifest.permission.RECORD_AUDIO] == false) MirrorState.setSound(context, false)
             MirrorState.error.value = null
             requestCapture()
         }
@@ -126,6 +131,7 @@ private fun MirrorScreen() {
         val needed = buildList {
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
             if (Build.VERSION.SDK_INT >= 37) add(Manifest.permission.ACCESS_LOCAL_NETWORK)
+            if (sound) add(Manifest.permission.RECORD_AUDIO)
         }.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
         if (needed.isNotEmpty()) permissions.launch(needed.toTypedArray()) else requestCapture()
     }
@@ -177,6 +183,21 @@ private fun MirrorScreen() {
                         label = { Text(q.label) },
                     )
                 }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Stream sound")
+                    Text(
+                        "Play this phone's media and game sound in the headset. Android asks for audio " +
+                            "permission once; the microphone isn't used.",
+                        color = Muted, fontSize = 13.sp,
+                    )
+                }
+                Switch(
+                    checked = sound,
+                    enabled = !running,
+                    onCheckedChange = { MirrorState.setSound(context, it) },
+                )
             }
             if (running) {
                 OutlinedButton(onClick = { MirrorService.stop(context) }) { Text("Stop sharing") }

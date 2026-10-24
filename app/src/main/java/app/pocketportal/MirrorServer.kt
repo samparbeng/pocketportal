@@ -68,6 +68,8 @@ class MirrorServer(
 
     fun broadcastText(text: String) = clients.forEach { it.offerText(text) }
 
+    fun broadcastAudio(chunk: ByteArray) = clients.forEach { it.offerAudio(chunk) }
+
     private fun handle(socket: Socket) {
         try {
             socket.tcpNoDelay = true
@@ -142,9 +144,14 @@ class MirrorServer(
         private val lock = Object()
         private var frame: ByteArray? = null
         private val texts = ArrayDeque<String>()
+        // Audio isn't latest-wins like video: every chunk plays, but a slow link
+        // drops the oldest so sound never falls more than MAX_AUDIO_QUEUE behind.
+        private val audio = ArrayDeque<ByteArray>()
         private var inFlight = 0
         @Volatile private var open = true
         @Volatile private var closeSent = false
+        /** The viewer's mute button turns this off. */
+        @Volatile var wantsAudio = true
 
         fun offerFrame(jpeg: ByteArray) = synchronized(lock) {
             frame = jpeg
@@ -156,23 +163,39 @@ class MirrorServer(
             lock.notifyAll()
         }
 
+        fun offerAudio(chunk: ByteArray) {
+            if (!wantsAudio) return
+            synchronized(lock) {
+                audio.addLast(chunk)
+                while (audio.size > MAX_AUDIO_QUEUE) audio.removeFirst()
+                lock.notifyAll()
+            }
+        }
+
         fun writerLoop() {
             try {
                 while (open) {
                     var text: String? = null
+                    var chunk: ByteArray? = null
                     var jpeg: ByteArray? = null
                     synchronized(lock) {
-                        while (open && texts.isEmpty() && (frame == null || inFlight >= MAX_IN_FLIGHT)) lock.wait()
+                        while (open && texts.isEmpty() && audio.isEmpty() &&
+                            (frame == null || inFlight >= MAX_IN_FLIGHT)
+                        ) lock.wait()
                         if (!open) return
-                        if (texts.isNotEmpty()) {
-                            text = texts.removeFirst()
-                        } else {
-                            jpeg = frame
-                            frame = null
-                            inFlight++
+                        when {
+                            texts.isNotEmpty() -> text = texts.removeFirst()
+                            // Sound gaps are more noticeable than a late frame.
+                            audio.isNotEmpty() -> chunk = audio.removeFirst()
+                            else -> {
+                                jpeg = frame
+                                frame = null
+                                inFlight++
+                            }
                         }
                     }
                     text?.let { send(OP_TEXT, it.toByteArray()) }
+                    chunk?.let { send(OP_BINARY, it) }
                     jpeg?.let { send(OP_BINARY, it) }
                 }
             } catch (e: Exception) {
@@ -202,6 +225,8 @@ class MirrorServer(
                                 lock.notifyAll()
                             }
                             "p" -> Unit
+                            AUDIO_ON -> wantsAudio = true
+                            AUDIO_OFF -> wantsAudio = false
                             else -> runCatching { onMessage(text) }.onFailure { Log.w(TAG, "bad message", it) }
                         }
                     }
@@ -295,6 +320,10 @@ class MirrorServer(
         const val TAG = "MirrorServer"
         const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
         const val MAX_IN_FLIGHT = 2
+        // 40 ms chunks: half a second of sound at most.
+        const val MAX_AUDIO_QUEUE = 12
+        const val AUDIO_ON = """{"t":"audio","on":true}"""
+        const val AUDIO_OFF = """{"t":"audio","on":false}"""
         const val MAX_MESSAGE = 1L shl 20
         const val OP_TEXT = 0x1
         const val OP_BINARY = 0x2

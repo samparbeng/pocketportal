@@ -76,6 +76,7 @@ class MirrorService : Service() {
     private var reader: ImageReader? = null
     private var server: MirrorServer? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var audio: AudioStreamer? = null
     private var advertising = false
 
     private val nsdListener = object : NsdManager.RegistrationListener {
@@ -206,10 +207,22 @@ class MirrorService : Service() {
 
         // Tell open viewers when remote touch is switched on or off on the phone.
         scope.launch { MirrorState.touchEnabled.drop(1).collect { sendHello() } }
+
+        if (MirrorState.sound.value && AudioStreamer.hasPermission(this)) {
+            val streamer = AudioStreamer { chunk -> server?.broadcastAudio(chunk) }
+            if (streamer.start(mp)) audio = streamer
+        }
     }
 
     private fun sendHello() {
-        server?.broadcastText(JSONObject().put("type", "hello").put("input", TouchService.instance != null).toString())
+        server?.broadcastText(
+            JSONObject()
+                .put("type", "hello")
+                .put("input", TouchService.instance != null)
+                .put("audio", audio != null)
+                .put("rate", AudioStreamer.SAMPLE_RATE)
+                .toString()
+        )
     }
 
     /** Fits the screen inside the quality preset's longest side, keeping both sides even for the encoder. */
@@ -311,6 +324,8 @@ class MirrorService : Service() {
         scope.cancel()
         if (advertising) runCatching { getSystemService(NsdManager::class.java).unregisterService(nsdListener) }
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
+        audio?.stop()
+        audio = null
         server?.stop()
         server = null
         handler.removeCallbacksAndMessages(null)

@@ -46,6 +46,7 @@ BUILT FOR SPEED
 • Low-latency streaming at up to 30 frames per second
 • Sharp, Balanced and Fast quality presets to suit your Wi-Fi
 • Works in portrait and landscape
+• Hear your phone's music, videos and games in the headset too (optional)
 
 ACCESSIBILITY SERVICE DISCLOSURE
 Remote touch is optional and uses Android's Accessibility Service API. With your permission, Pocket Portal uses it only to perform the taps, swipes and navigation actions you make in the headset, and to add the text you type in the headset to the text box you're typing into. Pocket Portal doesn't collect, store or share any of this information. Without remote touch, Pocket Portal works as a view-only mirror.
@@ -54,7 +55,6 @@ GOOD TO KNOW
 • Your phone and headset must be on the same Wi-Fi network
 • Requires Android 11 or newer
 • Apps that block screen capture (some banking and video apps) appear black
-• Sound keeps playing from the phone
 
 Works with Meta Quest 3, Meta Quest 3S and Meta Quest Pro through the Pocket Portal headset app, and with any headset that has a web browser. Pocket Portal is an independent app and isn't affiliated with or endorsed by Meta or Samsung.
 ```

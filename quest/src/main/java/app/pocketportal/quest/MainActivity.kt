@@ -337,6 +337,8 @@ private fun Viewer(phone: Phone, pin: String, onClose: () -> Unit, onWrongPin: (
                         setBackgroundColor(AndroidColor.BLACK)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
+                        // The phone's sound should start as soon as the viewer connects.
+                        settings.mediaPlaybackRequiresUserGesture = false
                         // The viewer page hides its own full-screen button inside the app.
                         settings.userAgentString = settings.userAgentString + " PocketPortalQuest/1"
                         webViewClient = object : WebViewClient() {

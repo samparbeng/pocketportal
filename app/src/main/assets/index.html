@@ -56,6 +56,7 @@
   <button data-key="notifications">Notifications</button>
   <button data-key="quick">Quick settings</button>
   <button id="kbd">⌨ Keyboard</button>
+  <button id="sound" hidden>🔊 Sound</button>
   <button id="full">⛶ Full screen</button>
 </div>
 <script>
@@ -80,6 +81,59 @@
   function showStatus() {
     setStatus(inputOn ? '' : 'View only: switch on "Pocket Portal remote touch" on the phone to control it', !inputOn);
   }
+
+  // Phone audio arrives as 40 ms chunks of 16-bit stereo PCM, each scheduled
+  // right after the previous one. AudioWorklet would be smoother but needs
+  // HTTPS, and this page is served over plain HTTP on the local network.
+  const sound = {
+    ctx: null, next: 0, rate: 48000, available: false,
+    muted: (() => { try { return localStorage.getItem('pocketportal-muted') === '1'; } catch { return false; } })(),
+    button: document.getElementById('sound'),
+    start() {
+      if (this.muted || !this.available) return;
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        this.ctx = new AC({ sampleRate: this.rate });
+      }
+      if (this.ctx.state === 'suspended') this.ctx.resume().then(() => this.label(), () => {});
+      this.label();
+    },
+    label() {
+      const b = this.button;
+      b.hidden = !this.available;
+      if (this.muted) b.textContent = '🔇 Muted';
+      else if (!this.ctx || this.ctx.state !== 'running') b.textContent = '🔈 Tap for sound';
+      else b.textContent = '🔊 Sound';
+    },
+    toggle() {
+      this.muted = !this.muted;
+      try { localStorage.setItem('pocketportal-muted', this.muted ? '1' : '0'); } catch {}
+      send({ t: 'audio', on: !this.muted });
+      if (this.muted) { if (this.ctx) this.ctx.suspend(); this.label(); }
+      else this.start();
+    },
+    play(buffer) {
+      const ctx = this.ctx;
+      if (this.muted || !ctx || ctx.state !== 'running') return;
+      const pcm = new Int16Array(buffer.slice(1)); // skip the type byte; Int16Array needs an even offset
+      const frames = pcm.length >> 1;
+      const out = ctx.createBuffer(2, frames, this.rate);
+      const left = out.getChannelData(0), right = out.getChannelData(1);
+      for (let i = 0; i < frames; i++) { left[i] = pcm[2 * i] / 32768; right[i] = pcm[2 * i + 1] / 32768; }
+      const now = ctx.currentTime;
+      // Start ~80 ms ahead to absorb Wi-Fi jitter; if the clocks drift too far apart, resync.
+      if (this.next < now + 0.02 || this.next > now + 0.4) this.next = now + 0.08;
+      const src = ctx.createBufferSource();
+      src.buffer = out;
+      src.connect(ctx.destination);
+      src.start(this.next);
+      this.next += out.duration;
+    },
+  };
+  sound.button.addEventListener('click', e => { e.stopPropagation(); if (sound.muted || (sound.ctx && sound.ctx.state === 'running')) sound.toggle(); else sound.start(); });
+  // Browsers only allow sound after the user interacts with the page.
+  document.addEventListener('pointerdown', () => sound.start(), { capture: true });
 
   function askPin(message) {
     pinBox.classList.add('open');
@@ -109,10 +163,16 @@
         if (msg.type === 'hello') {
           if (!accepted) { accepted = true; store.set(pin); }
           inputOn = msg.input; showStatus();
+          sound.available = !!msg.audio;
+          if (msg.rate) sound.rate = msg.rate;
+          if (sound.muted) send({ t: 'audio', on: false });
+          sound.start();
+          sound.label();
         }
         return;
       }
       const data = e.data, socket = ws;
+      if (new Uint8Array(data, 0, 1)[0] === 0x01) return sound.play(data);
       // Decode in arrival order, then ack so the phone sends the next frame.
       drawing = drawing.then(async () => {
         try {

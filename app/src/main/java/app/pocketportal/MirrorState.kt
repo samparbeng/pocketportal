@@ -28,6 +28,8 @@ object MirrorState {
     val touchEnabled = MutableStateFlow(false)
     val pin = MutableStateFlow("")
     val quality = MutableStateFlow(Quality.Balanced)
+    /** Stream what the phone is playing to the headset. */
+    val sound = MutableStateFlow(true)
 
     private var loaded = false
 
@@ -37,6 +39,7 @@ object MirrorState {
         val prefs = prefs(context)
         pin.value = prefs.getString("pin", null) ?: newPin().also { prefs.edit().putString("pin", it).apply() }
         quality.value = runCatching { Quality.valueOf(prefs.getString("quality", "")!!) }.getOrDefault(Quality.Balanced)
+        sound.value = prefs.getBoolean("sound", true)
     }
 
     fun regeneratePin(context: Context) {
@@ -47,6 +50,11 @@ object MirrorState {
     fun setQuality(context: Context, value: Quality) {
         quality.value = value
         prefs(context).edit().putString("quality", value.name).apply()
+    }
+
+    fun setSound(context: Context, value: Boolean) {
+        sound.value = value
+        prefs(context).edit().putBoolean("sound", value).apply()
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences("pocketportal", Context.MODE_PRIVATE)
