@@ -16,8 +16,8 @@ the Quest browser.
   works too: pinch is a tap, pinch-and-hold a long press, pinch-and-drag a swipe.
 - Security: everything stays on your local network and is encrypted (HTTPS and secure
   WebSocket on port 8443) with a certificate the phone creates in its keystore. The headset
-  app pins that certificate. A headset connects only if it's paired (its QR code scanned by
-  the phone) or knows the 6-digit PIN. Port 8080 only redirects.
+  app pins that certificate, and the viewer also needs the 6-digit PIN shown on the phone.
+  Port 8080 only redirects.
 - Not supported: Netflix and other DRM apps block screen capture on purpose and show black.
 
 APKs: `..\PocketPortal-1.0.0-debug.apk` (phone) and `..\PocketPortal-Quest-1.0.0-debug.apk` (headset). Publishing to Google Play: see [PLAY_STORE.md](PLAY_STORE.md).
@@ -32,9 +32,7 @@ Needs Android 11 or newer.
 
 ## 2. Set up once
 
-1. **Pair the headset:** open Pocket Portal on the Quest; it shows a QR code. On the phone,
-   tap **Scan headset code** and point the phone at the code. No PIN is needed after that.
-2. **Remote touch:** on the phone tap **Turn on**, then **Agree and continue**, and in
+1. **Remote touch:** on the phone tap **Turn on**, then **Agree and continue**, and in
    Settings go to **Installed apps → Pocket Portal remote touch** and switch it **On**.
    - **If the switch is greyed out** ("Restricted setting"), Android is blocking a
      sideloaded app. In Pocket Portal open **More options → Open App info**, tap **⋮**,
@@ -45,8 +43,9 @@ Needs Android 11 or newer.
 
 1. Phone and Quest on the **same Wi-Fi** (5 GHz or 6 GHz works best).
 2. On the phone tap **Connect**. Allow notifications and choose **Share entire screen**.
-3. The Quest app opens the phone's screen by itself. It reconnects by itself when the
-   headset wakes up, as long as the phone is still sharing.
+3. On the Quest open **Pocket Portal** and pick the phone. The first time, enter the PIN
+   shown on the phone; the headset remembers it. After that it reopens that phone by itself,
+   also when the headset wakes up, as long as the phone is still sharing.
 
 ### Using the Quest browser instead
 

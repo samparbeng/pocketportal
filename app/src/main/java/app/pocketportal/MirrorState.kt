@@ -2,8 +2,6 @@ package app.pocketportal
 
 import android.content.Context
 import android.hardware.display.DisplayManager
-import android.net.Uri
-import org.json.JSONObject
 import java.security.MessageDigest
 import android.util.DisplayMetrics
 import android.view.Display
@@ -49,11 +47,6 @@ object MirrorState {
     val sound = MutableStateFlow(true)
     /** What the phone's own screen does while sharing. */
     val screenMode = MutableStateFlow(ScreenMode.Normal)
-    /**
-     * Headsets paired by scanning the QR code they show: secret key → headset name.
-     * A paired headset connects with its key instead of the PIN.
-     */
-    val headsets = MutableStateFlow<Map<String, String>>(emptyMap())
 
     private var loaded = false
 
@@ -61,10 +54,6 @@ object MirrorState {
         if (loaded) return
         loaded = true
         val prefs = prefs(context)
-        headsets.value = runCatching {
-            val json = JSONObject(prefs.getString("headsets", "{}")!!)
-            json.keys().asSequence().associateWith { json.getString(it) }
-        }.getOrDefault(emptyMap())
         pin.value = prefs.getString("pin", null) ?: newPin().also { prefs.edit().putString("pin", it).apply() }
         quality.value = runCatching { Quality.valueOf(prefs.getString("quality", "")!!) }.getOrDefault(Quality.Balanced)
         sound.value = prefs.getBoolean("sound", true)
@@ -91,35 +80,8 @@ object MirrorState {
         prefs(context).edit().putBoolean("sound", value).apply()
     }
 
-    /**
-     * Reads a headset's pairing code, `pocketportal://pair?t=<key>&n=<name>`, and
-     * remembers it. Returns the headset's name, or null if it isn't a Pocket Portal code.
-     */
-    fun pairHeadset(context: Context, code: String): String? {
-        val uri = runCatching { Uri.parse(code.trim()) }.getOrNull() ?: return null
-        if (uri.scheme != "pocketportal" || uri.host != "pair") return null
-        val key = uri.getQueryParameter("t")?.takeIf { it.matches(Regex("[0-9a-f]{32}")) } ?: return null
-        val name = uri.getQueryParameter("n")?.take(40)?.ifBlank { null } ?: "Headset"
-        // One entry per headset name, so re-pairing replaces the old key.
-        val updated = headsets.value.filterValues { it != name } + (key to name)
-        saveHeadsets(context, updated)
-        return name
-    }
-
-    fun forgetHeadsets(context: Context) = saveHeadsets(context, emptyMap())
-
-    private fun saveHeadsets(context: Context, value: Map<String, String>) {
-        headsets.value = value
-        prefs(context).edit().putString("headsets", JSONObject(value).toString()).apply()
-    }
-
-    /** True for the PIN or a paired headset's key; compared in constant time. */
-    fun isAuthorized(key: String): Boolean {
-        val given = key.toByteArray()
-        var ok = MessageDigest.isEqual(given, pin.value.toByteArray())
-        headsets.value.keys.forEach { ok = MessageDigest.isEqual(given, it.toByteArray()) || ok }
-        return ok
-    }
+    /** True for the right PIN; compared in constant time. */
+    fun isAuthorized(key: String): Boolean = MessageDigest.isEqual(key.toByteArray(), pin.value.toByteArray())
 
     private fun prefs(context: Context) = context.getSharedPreferences("pocketportal", Context.MODE_PRIVATE)
 

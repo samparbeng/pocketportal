@@ -69,9 +69,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.delay
 
 private val Accent = Color(0xFF4FA3FF)
@@ -116,12 +113,11 @@ private fun MirrorScreen() {
     val running by MirrorState.running.collectAsStateWithLifecycle()
     val viewers by MirrorState.viewers.collectAsStateWithLifecycle()
     val touch by MirrorState.touchEnabled.collectAsStateWithLifecycle()
-    val headsets by MirrorState.headsets.collectAsStateWithLifecycle()
+    val pin by MirrorState.pin.collectAsStateWithLifecycle()
     val sound by MirrorState.sound.collectAsStateWithLifecycle()
     val error by MirrorState.error.collectAsStateWithLifecycle()
     var showDisclosure by remember { mutableStateOf(false) }
     var showOptions by rememberSaveable { mutableStateOf(false) }
-    var pairMessage by remember { mutableStateOf<String?>(null) }
 
     // The Wi-Fi address can change while the app is open, so keep checking.
     var address by remember { mutableStateOf(localIpAddress()) }
@@ -167,18 +163,6 @@ private fun MirrorScreen() {
         }.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
         if (needed.isNotEmpty()) permissions.launch(needed.toTypedArray()) else requestCapture()
     }
-    fun scanHeadset() {
-        val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
-        GmsBarcodeScanning.getClient(context, options).startScan()
-            .addOnSuccessListener { barcode ->
-                val name = barcode.rawValue?.let { MirrorState.pairHeadset(context, it) }
-                pairMessage = if (name != null) "Paired with $name. It connects by itself from now on."
-                else "That isn't a Pocket Portal code. Scan the code shown in Pocket Portal on the headset."
-            }
-            .addOnFailureListener {
-                pairMessage = "The scanner couldn't start (${it.message}). You can use the PIN under More options instead."
-            }
-    }
 
     Column(
         Modifier
@@ -221,29 +205,29 @@ private fun MirrorScreen() {
         }
         error?.let { Text(it, color = Danger) }
 
-        // ---- One-time setup, shown only while something is missing ------------------------
-        if (headsets.isEmpty()) {
-            SetupCard(
-                title = "Pair your headset",
-                body = "Open Pocket Portal on the Quest. It shows a code: scan it here once and the headset " +
-                    "connects by itself from then on, with no PIN.",
-                action = "Scan headset code",
-                onAction = ::scanHeadset,
-            )
+        // The headset app asks for this once per phone and remembers it.
+        Card(
+            Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            shape = RoundedCornerShape(18.dp),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("PIN for the headset", color = Muted)
+                Text(pin, fontSize = 36.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                Text(
+                    "Open Pocket Portal on the Quest and pick this phone. It asks for the PIN the first time only.",
+                    color = Muted, fontSize = 13.sp,
+                )
+            }
         }
+
+        // ---- One-time setup, shown only while something is missing ------------------------
         if (!touch) {
             SetupCard(
                 title = "Turn on remote touch",
                 body = "Lets you tap, swipe and type on this phone from the headset. Without it the headset can only watch.",
                 action = "Turn on",
                 onAction = { showDisclosure = true },
-            )
-        }
-        pairMessage?.let { Text(it, color = Accent) }
-        if (headsets.isNotEmpty() && touch) {
-            Text(
-                "Paired with ${headsets.values.joinToString()} · remote touch on",
-                color = Muted, fontSize = 13.sp,
             )
         }
 
@@ -259,7 +243,7 @@ private fun MirrorScreen() {
             Text("More options", Modifier.weight(1f), fontSize = 17.sp)
             Text(if (showOptions) "▴" else "▾", color = Muted, fontSize = 17.sp)
         }
-        if (showOptions) MoreOptions(address, running, onScan = ::scanHeadset)
+        if (showOptions) MoreOptions(address, running)
 
         val privacyUrl = stringResource(R.string.privacy_policy_url)
         if (privacyUrl.isNotBlank()) {
@@ -307,13 +291,12 @@ private fun SetupCard(title: String, body: String, action: String, onAction: () 
 }
 
 @Composable
-private fun MoreOptions(address: String?, running: Boolean, onScan: () -> Unit) {
+private fun MoreOptions(address: String?, running: Boolean) {
     val context = LocalContext.current
     val quality by MirrorState.quality.collectAsStateWithLifecycle()
     val sound by MirrorState.sound.collectAsStateWithLifecycle()
     val screenMode by MirrorState.screenMode.collectAsStateWithLifecycle()
     val pin by MirrorState.pin.collectAsStateWithLifecycle()
-    val headsets by MirrorState.headsets.collectAsStateWithLifecycle()
     val paired by AdbBridge.paired.collectAsStateWithLifecycle()
     val pairingStatus by AdbBridge.status.collectAsStateWithLifecycle()
     var canDim by remember { mutableStateOf(PhoneScreen.canDim(context)) }
@@ -405,14 +388,6 @@ private fun MoreOptions(address: String?, running: Boolean, onScan: () -> Unit) 
         }
 
         HorizontalDivider(color = Color(0xFF26303B))
-        Text("Paired headsets", color = Muted)
-        Text(if (headsets.isEmpty()) "None yet." else headsets.values.joinToString(), fontSize = 15.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onScan) { Text(if (headsets.isEmpty()) "Scan headset code" else "Pair another") }
-            if (headsets.isNotEmpty()) TextButton(onClick = { MirrorState.forgetHeadsets(context) }) { Text("Forget all") }
-        }
-
-        HorizontalDivider(color = Color(0xFF26303B))
         Text("Use a web browser instead", color = Muted)
         if (address != null) {
             Text(
@@ -423,8 +398,7 @@ private fun MoreOptions(address: String?, running: Boolean, onScan: () -> Unit) 
             Text("https://$address:${MirrorState.PORT}", fontSize = 18.sp, fontFamily = FontFamily.Monospace, color = Accent)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("PIN  ", color = Muted)
-            Text(pin, fontSize = 26.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            Text("PIN  $pin", color = Muted, fontFamily = FontFamily.Monospace)
             Spacer(Modifier.width(12.dp))
             TextButton(onClick = { MirrorState.regeneratePin(context) }, enabled = !running) { Text("New PIN") }
         }

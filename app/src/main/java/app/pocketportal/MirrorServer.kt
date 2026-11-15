@@ -34,7 +34,7 @@ class MirrorServer(
     private val redirectPort: Int,
     private val ssl: SSLContext,
     private val page: ByteArray,
-    /** True for the PIN or a paired headset's key. */
+    /** True when the viewer gave the right PIN. */
     private val authorize: (String) -> Boolean,
     private val onConnected: (Client) -> Unit,
     private val onMessage: (String) -> Unit,

@@ -64,9 +64,6 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
 
-    // Scans the headset's pairing QR code through Google Play services; needs no camera permission.
-    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
-
     // Connects to the phone's own Wireless debugging for shell-level access, needed to
     // switch the panel off while sharing.
     implementation("com.github.MuntashirAkon:libadb-android:3.1.1")

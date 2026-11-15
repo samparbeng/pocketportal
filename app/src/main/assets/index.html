@@ -277,10 +277,7 @@
       if (typeof e.data === 'string') {
         const msg = JSON.parse(e.data);
         if (msg.type === 'hello') {
-          if (!accepted) {
-            accepted = true; store.set(pin);
-            if (window.PocketPortalApp && window.PocketPortalApp.connected) window.PocketPortalApp.connected();
-          }
+          if (!accepted) { accepted = true; store.set(pin); }
           // A burst of clock pings to start, then occasional ones to follow drift.
           for (let i = 0; i < 5; i++) setTimeout(() => clock.ping(), i * 200);
           inputOn = msg.input; showStatus();
