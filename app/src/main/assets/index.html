@@ -425,7 +425,11 @@
       if (typeof e.data === 'string') {
         const msg = JSON.parse(e.data);
         if (msg.type === 'hello') {
-          if (!accepted) { accepted = true; store.set(pin); }
+          if (!accepted) {
+            accepted = true;
+            if (window.PocketPortalApp?.authenticated) window.PocketPortalApp.authenticated();
+            else store.set(pin);
+          }
           // A burst of clock pings to start, then occasional ones to follow drift.
           for (let i = 0; i < 5; i++) setTimeout(() => clock.ping(), i * 200);
           inputOn = msg.input; showStatus();
@@ -474,7 +478,7 @@
     ws.onclose = e => {
       // A refused PIN closes with 4001; older phone builds lose that code, but they
       // also never say hello, so an accepted-then-silent close means the same thing.
-      if (e.code === 4001 || (opened && !accepted)) {
+      if (e.code === 4001 || (opened && !accepted && !window.PocketPortalApp?.authenticated)) {
         pin = ''; store.set('');
         if (window.PocketPortalApp) return window.PocketPortalApp.wrongPin();
         return askPin('Wrong PIN, try again.');

@@ -58,8 +58,10 @@ Needs Android 11 or newer.
    the phone's hotspot.
 2. On the phone tap **Connect**. Allow notifications and choose **Entire screen**.
 3. On the Quest open **Pocket Portal** and pick the phone under **Phones nearby**. The first
-   time, enter the PIN shown on the phone; the headset remembers it. After that it reopens
-   that phone by itself, also when the headset wakes up, as long as the phone is still sharing.
+   time, enter the PIN and compare the security code with **More options** on the phone.
+   Once the phone accepts the PIN, the headset remembers the pairing. It can reopen the
+   phone after the headset wakes or the phone's Wi-Fi address changes, as long as it can
+   discover the phone and the phone is still sharing.
 
 Stop with **Disconnect** in Pocket Portal, or with **Stop** in the notification.
 
@@ -197,7 +199,8 @@ It lists phones that are sharing on the same Wi-Fi, so you don't type an address
 
 1. On the phone, tap **Connect** in Pocket Portal.
 2. On the Quest, open Pocket Portal. Your phone appears under **Phones nearby**. Tap it.
-3. Enter the PIN once. It's remembered for that phone.
+3. Enter the PIN and confirm the security code matches the one shown under **More options**
+   on the phone. A new phone certificate, including after a reinstall, requires pairing again.
 4. **‹ Phones** goes back, and **Reload** reconnects. You can resize the panel like any window.
    For DeX the app opens a separate wide window by itself.
 

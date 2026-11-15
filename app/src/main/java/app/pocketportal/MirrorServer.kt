@@ -177,7 +177,7 @@ class MirrorServer(
             Thread.sleep(1000)
             client.sendClose(4001, "Wrong PIN")
             socket.soTimeout = 2000
-            runCatching { client.readerLoop(DataInputStream(input)) }
+            runCatching { client.readerLoop(DataInputStream(input), closeOnly = true) }
             return
         }
 
@@ -302,12 +302,13 @@ class MirrorServer(
             }
         }
 
-        fun readerLoop(input: DataInputStream) {
+        fun readerLoop(input: DataInputStream, closeOnly: Boolean = false) {
             while (open) {
                 val b0 = input.read()
                 if (b0 < 0) return
                 val b1 = input.readUnsignedByte()
                 val opcode = b0 and 0x0F
+                if (closeOnly && opcode != OP_CLOSE) return
                 var length = (b1 and 0x7F).toLong()
                 if (length == 126L) length = input.readUnsignedShort().toLong()
                 else if (length == 127L) length = input.readLong()

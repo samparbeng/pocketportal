@@ -128,7 +128,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
     val context = LocalContext.current
-    val prefs = remember { context.getSharedPreferences("quest", Context.MODE_PRIVATE) }
+    val prefs = remember { context.getSharedPreferences("quest", Context.MODE_PRIVATE).also(::migrateOldPairings) }
     var phone by remember { mutableStateOf<Phone?>(null) }
     var pin by remember { mutableStateOf<String?>(null) }
     // The phone whose PIN we're asking for, and why we're asking again.
@@ -140,12 +140,16 @@ private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
     // ...except right after the user closed the wide DeX window.
     LaunchedEffect(started) { autoOpen = !WideViewerActivity.consumeUserClosed() }
 
-    fun pinKey(p: Phone) = "pin:${p.host}"
-    fun certKey(p: Phone) = "cert:${p.host}"
+    val phones by finder.phones.collectAsStateWithLifecycle()
+    var verified by remember { mutableStateOf<String?>(null) }
+    fun identity(p: Phone) = p.fingerprint ?: prefs.getString("identity:${p.host}:${p.port}", null)
+    fun pinKey(fingerprint: String) = "paired:$fingerprint"
     fun connect(p: Phone) {
-        val saved = prefs.getString(pinKey(p), null)
+        val fingerprint = identity(p)
+        val saved = fingerprint?.let { prefs.getString(pinKey(it), null) }
+        verified = fingerprint?.takeIf { saved != null }
         if (saved != null) {
-            prefs.edit().putString("last", p.host).apply()
+            prefs.edit().putString("lastPaired", fingerprint).apply()
             phone = p
             pin = saved
         } else {
@@ -154,22 +158,28 @@ private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
         }
     }
 
-    val current = phone
+    val current = phone?.let { previous ->
+        verified?.let { fingerprint -> phones.firstOrNull { it.fingerprint == fingerprint } } ?: previous
+    }
     val currentPin = pin
     if (current != null && currentPin != null) {
-        key(current, currentPin) {
+        LaunchedEffect(current) { phone = current }
+        key(current.host, current.port, currentPin) {
             Viewer(
                 phone = current,
                 pin = currentPin,
-                // A fingerprint advertised over mDNS wins (the phone renews its certificate yearly);
-                // otherwise use the one remembered from the first connection.
-                trustedFingerprint = current.fingerprint ?: prefs.getString(certKey(current), null),
-                onTrust = { prefs.edit().putString(certKey(current), it).apply() },
+                trustedFingerprint = verified,
+                onAuthenticated = { fingerprint ->
+                    verified = fingerprint
+                    prefs.edit().putString(pinKey(fingerprint), currentPin)
+                        .putString("identity:${current.host}:${current.port}", fingerprint)
+                        .putString("lastPaired", fingerprint).apply()
+                },
                 onClose = { phone = null; pin = null; autoOpen = false },
                 // DeX is landscape: carry on in the wide window.
                 onLandscape = { wide ->
                     if (wide) {
-                        val fingerprint = current.fingerprint ?: prefs.getString(certKey(current), null)
+                        val fingerprint = verified ?: return@Viewer
                         WideViewerActivity.open(context, current, currentPin, fingerprint)
                         phone = null; pin = null; autoOpen = false
                         (context as? android.app.Activity)?.finish()
@@ -177,7 +187,7 @@ private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
                 },
                 onWrongPin = {
                     autoOpen = false
-                    prefs.edit().remove(pinKey(current)).apply()
+                    verified?.let { prefs.edit().remove(pinKey(it)).apply() }
                     pin = null
                     pinError = "That PIN didn't work. Check the PIN shown in Pocket Portal on the phone."
                     asking = current
@@ -185,12 +195,13 @@ private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
             )
         }
     } else {
-        val phones by finder.phones.collectAsStateWithLifecycle()
         // Only a phone this headset has already connected to with a saved PIN.
         LaunchedEffect(phones, autoOpen) {
             if (!autoOpen) return@LaunchedEffect
-            val last = prefs.getString("last", null) ?: return@LaunchedEffect
-            phones.firstOrNull { it.host == last && prefs.getString(pinKey(it), null) != null }?.let(::connect)
+            val last = prefs.getString("lastPaired", null) ?: return@LaunchedEffect
+            if (asking == null && prefs.getString(pinKey(last), null) != null) {
+                phones.firstOrNull { it.fingerprint == last }?.let(::connect)
+            }
         }
         PhoneList(finder, onOpen = { autoOpen = false; connect(it) })
     }
@@ -201,7 +212,6 @@ private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
             error = pinError,
             onDismiss = { asking = null; phone = null },
             onSubmit = { code ->
-                prefs.edit().putString(pinKey(target), code).putString("last", target.host).apply()
                 asking = null
                 phone = target
                 pin = code
@@ -347,23 +357,34 @@ internal fun Viewer(
     phone: Phone,
     pin: String,
     trustedFingerprint: String?,
-    onTrust: (String) -> Unit,
+    onAuthenticated: (String) -> Unit,
     onClose: () -> Unit,
     onWrongPin: () -> Unit,
     /** The phone says whether it's showing DeX (landscape) or its own screen. */
     onLandscape: (Boolean) -> Unit = {},
 ) {
     BackHandler(onBack = onClose)
-    var webView by remember { mutableStateOf<WebView?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     // A certificate that doesn't match the one this phone used before.
     var unexpectedCert by remember { mutableStateOf<String?>(null) }
     val wrongPin by rememberUpdatedState(onWrongPin)
-    val trust by rememberUpdatedState(onTrust)
-    val trusted by rememberUpdatedState(trustedFingerprint)
+    val authenticated by rememberUpdatedState(onAuthenticated)
+    var approved by remember { mutableStateOf<String?>(null) }
+    val trusted by rememberUpdatedState(approved ?: trustedFingerprint)
+    var reload by remember { mutableStateOf(0) }
+    fun reloadViewer() {
+        error = null
+        reload++
+    }
     // The viewer page calls this instead of showing its own PIN box when it runs in this app.
     val landscape by rememberUpdatedState(onLandscape)
-    val bridge = remember { QuestBridge(onWrongPin = { wrongPin() }, onShape = { landscape(it) }) }
+    val bridge = remember {
+        QuestBridge(
+            onWrongPin = { wrongPin() },
+            onAuthenticated = { trusted?.let(authenticated) },
+            onShape = { if (trusted != null) landscape(it) },
+        )
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -375,52 +396,54 @@ internal fun Viewer(
         ) {
             TextButton(onClick = onClose) { Text("‹ Phones", fontSize = 18.sp) }
             Text(phone.name, Modifier.weight(1f), color = Muted, fontSize = 16.sp)
-            TextButton(onClick = { error = null; webView?.reload() }) { Text("Reload", fontSize = 18.sp) }
+            TextButton(onClick = { reloadViewer() }) { Text("Reload", fontSize = 18.sp) }
         }
         Box(Modifier.weight(1f)) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { context ->
-                    WebView(context).apply {
-                        // Without explicit MATCH_PARENT the WebView sizes its viewport to the
-                        // page's content, so the page's height:100% layout collapses to zero.
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                        setBackgroundColor(AndroidColor.BLACK)
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        // The phone's sound should start as soon as the viewer connects.
-                        settings.mediaPlaybackRequiresUserGesture = false
-                        // The viewer page hides its own full-screen button inside the app.
-                        settings.userAgentString = settings.userAgentString + " PocketPortalQuest/1"
-                        webViewClient = object : WebViewClient() {
-                            override fun onReceivedError(view: WebView, request: WebResourceRequest, err: WebResourceError) {
-                                if (request.isForMainFrame) error = err.description.toString()
-                            }
+            key(reload) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { context ->
+                        WebView(context).apply {
+                            // Without explicit MATCH_PARENT the WebView sizes its viewport to the
+                            // page's content, so the page's height:100% layout collapses to zero.
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            setBackgroundColor(AndroidColor.BLACK)
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            // The phone's sound should start as soon as the viewer connects.
+                            settings.mediaPlaybackRequiresUserGesture = false
+                            // The viewer page hides its own full-screen button inside the app.
+                            settings.userAgentString = settings.userAgentString + " PocketPortalQuest/1"
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                                    request.url.toString() != phone.url
 
-                            // The phone signs its own certificate, so the WebView always flags it.
-                            // Accept it only when it matches the fingerprint the phone advertised
-                            // or the one it used the first time (trust on first use).
-                            override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, err: SslError) {
-                                val seen = err.certificate.x509Certificate?.let { sha256Hex(it.encoded) }
-                                val expected = trusted
-                                when {
-                                    seen == null -> handler.cancel()
-                                    expected == null -> { trust(seen); handler.proceed() }
-                                    seen.equals(expected, ignoreCase = true) -> handler.proceed()
-                                    else -> { handler.cancel(); unexpectedCert = seen }
+                                override fun onReceivedError(view: WebView, request: WebResourceRequest, err: WebResourceError) {
+                                    if (request.isForMainFrame) error = err.description.toString()
+                                }
+
+                                // The phone signs its own certificate, so the WebView always flags it.
+                                // Only proceed with a certificate verified against the phone.
+                                override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, err: SslError) {
+                                    val seen = err.certificate.x509Certificate?.let { sha256Hex(it.encoded) }
+                                    val expected = trusted
+                                    when {
+                                        seen == null -> handler.cancel()
+                                        seen.equals(expected, ignoreCase = true) -> handler.proceed()
+                                        else -> { handler.cancel(); unexpectedCert = seen }
+                                    }
                                 }
                             }
+                            addJavascriptInterface(bridge, "PocketPortalApp")
+                            // The page reads the PIN from the #fragment, which never leaves the headset.
+                            loadUrl("${phone.url}#$pin")
                         }
-                        addJavascriptInterface(bridge, "PocketPortalApp")
-                        // The page reads the PIN from the #fragment, which never leaves the headset.
-                        loadUrl("${phone.url}#$pin")
-                        webView = this
-                    }
-                },
-                onRelease = { it.destroy() },
-            )
+                    },
+                    onRelease = { it.destroy() },
+                )
+            }
             unexpectedCert?.let { seen ->
                 Column(
                     Modifier
@@ -430,20 +453,20 @@ internal fun Viewer(
                     verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("Security code changed", fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (trustedFingerprint == null) "Verify your phone" else "Security code changed", fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "This device's security code doesn't match the one ${phone.name} used before. " +
-                            "That happens after reinstalling Pocket Portal on the phone, but it could also mean " +
-                            "another device is pretending to be your phone.\n\nCompare with the security code " +
-                            "shown in Pocket Portal on the phone:",
+                        "On your phone, open Pocket Portal → More options. Continue only if " +
+                            "the security code shown there matches this one.",
                         color = Muted,
                     )
                     Text(
                         seen.take(16).chunked(4).joinToString(" "),
                         fontSize = 22.sp, fontFamily = FontFamily.Monospace,
                     )
-                    Button(onClick = { trust(seen); unexpectedCert = null; webView?.reload() }) {
-                        Text("They match, connect", fontSize = 18.sp)
+                    if (trustedFingerprint == null) {
+                        Button(onClick = { approved = seen; unexpectedCert = null; reloadViewer() }) {
+                            Text("They match, connect", fontSize = 18.sp)
+                        }
                     }
                     TextButton(onClick = onClose) { Text("Back to phones", fontSize = 18.sp) }
                 }
@@ -462,7 +485,7 @@ internal fun Viewer(
                         "Check that sharing is on in Pocket Portal on the phone and that both are on the same Wi-Fi.\n($message)",
                         color = Muted,
                     )
-                    Button(onClick = { error = null; webView?.reload() }) { Text("Try again", fontSize = 18.sp) }
+                    Button(onClick = { reloadViewer() }) { Text("Try again", fontSize = 18.sp) }
                     TextButton(onClick = onClose) { Text("Back to phones", fontSize = 18.sp) }
                 }
             }
@@ -471,7 +494,11 @@ internal fun Viewer(
 }
 
 /** Exposed to the viewer page as `window.PocketPortalApp`. */
-private class QuestBridge(private val onWrongPin: () -> Unit, private val onShape: (Boolean) -> Unit) {
+private class QuestBridge(
+    private val onWrongPin: () -> Unit,
+    private val onAuthenticated: () -> Unit,
+    private val onShape: (Boolean) -> Unit,
+) {
     private val main = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
@@ -479,11 +506,38 @@ private class QuestBridge(private val onWrongPin: () -> Unit, private val onShap
         main.post(onWrongPin)
     }
 
+    @JavascriptInterface
+    fun authenticated() { main.post(onAuthenticated) }
+
     /** Called with true when the phone streams DeX, false for its own screen. */
     @JavascriptInterface
     fun shape(landscape: Boolean) {
         main.post { onShape(landscape) }
     }
+}
+
+/**
+ * Older versions kept the PIN and certificate per address (`pin:HOST`, `cert:HOST`, `last`).
+ * Pairing is now per certificate (`paired:FINGERPRINT`), so carry those over once instead of
+ * asking for the PIN and security code again. Only pairs that had both a PIN and a certificate
+ * move; the old keys go away either way.
+ */
+private fun migrateOldPairings(prefs: android.content.SharedPreferences) {
+    val old = prefs.all.keys.filter { it.startsWith("pin:") || it.startsWith("cert:") || it == "last" }
+    if (old.isEmpty()) return
+    val edit = prefs.edit()
+    val lastHost = prefs.getString("last", null)
+    old.filter { it.startsWith("pin:") }.forEach { key ->
+        val host = key.removePrefix("pin:")
+        val pin = prefs.getString(key, null)
+        val cert = prefs.getString("cert:$host", null)?.lowercase()
+        if (pin != null && cert != null && prefs.getString("paired:$cert", null) == null) {
+            edit.putString("paired:$cert", pin).putString("identity:$host:8443", cert)
+            if (host == lastHost && prefs.getString("lastPaired", null) == null) edit.putString("lastPaired", cert)
+        }
+    }
+    old.forEach { edit.remove(it) }
+    edit.apply()
 }
 
 private fun sha256Hex(bytes: ByteArray): String =

@@ -43,38 +43,58 @@ class PhoneFinder(context: Context) {
     // NsdManager.resolveService handles one request at a time, so queue them.
     private val pending = ArrayDeque<NsdServiceInfo>()
     private var resolving = false
-    private var discovering = false
-
-    private val discovery = object : NsdManager.DiscoveryListener {
-        override fun onDiscoveryStarted(serviceType: String) = Unit
-        override fun onDiscoveryStopped(serviceType: String) = Unit
-        override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-            Log.w(TAG, "discovery failed: $errorCode")
-            discovering = false
-        }
-        override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
-        override fun onServiceFound(info: NsdServiceInfo) {
-            main.post { pending.addLast(info); resolveNext() }
-        }
-        override fun onServiceLost(info: NsdServiceInfo) {
-            main.post {
-                if (found.remove(info.serviceName) != null) publish()
-            }
-        }
-    }
+    private var discovery: NsdManager.DiscoveryListener? = null
+    private val advertised = mutableSetOf<String>()
 
     fun start() {
-        if (discovering) return
-        discovering = true
-        multicastLock.acquire()
-        nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discovery)
+        if (discovery != null) return
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(serviceType: String) = Unit
+            override fun onDiscoveryStopped(serviceType: String) = Unit
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                main.post {
+                    if (discovery === this) {
+                        Log.w(TAG, "discovery failed: $errorCode")
+                        stop()
+                    }
+                }
+            }
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
+            override fun onServiceFound(info: NsdServiceInfo) {
+                main.post {
+                    if (discovery === this) {
+                        advertised.add(info.serviceName)
+                        pending.addLast(info)
+                        resolveNext()
+                    }
+                }
+            }
+            override fun onServiceLost(info: NsdServiceInfo) {
+                main.post {
+                    if (discovery === this) {
+                        advertised.remove(info.serviceName)
+                        pending.removeAll { it.serviceName == info.serviceName }
+                        if (found.remove(info.serviceName) != null) publish()
+                    }
+                }
+            }
+        }
+        discovery = listener
+        try {
+            multicastLock.acquire()
+            nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Could not start phone discovery", e)
+            stop()
+        }
     }
 
     fun stop() {
-        if (!discovering) return
-        discovering = false
-        runCatching { nsd.stopServiceDiscovery(discovery) }
-        multicastLock.release()
+        val listener = discovery ?: return
+        discovery = null
+        runCatching { nsd.stopServiceDiscovery(listener) }
+        if (multicastLock.isHeld) multicastLock.release()
+        advertised.clear()
         found.clear()
         pending.clear()
         publish()
@@ -83,6 +103,7 @@ class PhoneFinder(context: Context) {
     @Suppress("DEPRECATION")
     private fun resolveNext() {
         if (resolving) return
+        val listener = discovery ?: return
         val info = pending.removeFirstOrNull() ?: return
         resolving = true
         nsd.resolveService(info, object : NsdManager.ResolveListener {
@@ -98,7 +119,7 @@ class PhoneFinder(context: Context) {
                     resolving = false
                     val host = info.host
                     // The WebView URL needs IPv4; link-local IPv6 would need a zone id.
-                    if (host is Inet4Address) {
+                    if (discovery === listener && info.serviceName in advertised && host is Inet4Address) {
                         val fingerprint = info.attributes["fp"]?.let { String(it) }
                         found[info.serviceName] = Phone(info.serviceName, host.hostAddress!!, info.port, fingerprint)
                         publish()

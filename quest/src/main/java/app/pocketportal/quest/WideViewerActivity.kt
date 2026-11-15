@@ -9,6 +9,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 
@@ -47,6 +54,8 @@ class WideViewerActivity : ComponentActivity() {
         }
     }
 
+    private lateinit var finder: PhoneFinder
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val phone = Phone(
@@ -55,6 +64,8 @@ class WideViewerActivity : ComponentActivity() {
             port = intent.getIntExtra(EXTRA_PORT, 8443),
             fingerprint = intent.getStringExtra(EXTRA_FP),
         )
+        val fingerprint = phone.fingerprint ?: return finish()
+        finder = PhoneFinder(this)
         val pin = intent.getStringExtra(EXTRA_PIN) ?: return finish()
         val prefs = getSharedPreferences("quest", Context.MODE_PRIVATE)
         setContent {
@@ -67,19 +78,38 @@ class WideViewerActivity : ComponentActivity() {
                 ),
             ) {
                 Surface(Modifier.fillMaxSize()) {
-                    Viewer(
-                        phone = phone,
-                        pin = pin,
-                        trustedFingerprint = phone.fingerprint ?: prefs.getString("cert:${phone.host}", null),
-                        onTrust = { prefs.edit().putString("cert:${phone.host}", it).apply() },
-                        onClose = { backToPhones(userClosed = true) },
-                        onWrongPin = { backToPhones(userClosed = false) },
-                        // DeX ended: the phone's own screen goes back in the tall panel.
-                        onLandscape = { wide -> if (!wide) backToPhones(userClosed = false) },
-                    )
+                    val phones by finder.phones.collectAsStateWithLifecycle()
+                    var lastEndpoint by remember { mutableStateOf(phone) }
+                    val endpoint = phones.firstOrNull { it.fingerprint == fingerprint } ?: lastEndpoint
+                    LaunchedEffect(endpoint) { lastEndpoint = endpoint }
+                    key(endpoint.host, endpoint.port) {
+                        Viewer(
+                            phone = endpoint,
+                            pin = pin,
+                            trustedFingerprint = fingerprint,
+                            onAuthenticated = {},
+                            onClose = { backToPhones(userClosed = true) },
+                            onWrongPin = {
+                                prefs.edit().remove("paired:$fingerprint").apply()
+                                backToPhones(userClosed = false)
+                            },
+                            // DeX ended: the phone's own screen goes back in the tall panel.
+                            onLandscape = { wide -> if (!wide) backToPhones(userClosed = false) },
+                        )
+                    }
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (::finder.isInitialized) finder.start()
+    }
+
+    override fun onStop() {
+        if (::finder.isInitialized) finder.stop()
+        super.onStop()
     }
 
     private fun backToPhones(userClosed: Boolean) {
