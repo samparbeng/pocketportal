@@ -18,6 +18,7 @@ import kotlin.system.exitProcess
  *     press X Y MS
  *     swipe MS X1 Y1 X2 Y2 ...
  *     key KEYCODE
+ *     display ID        (where the following input goes; 0 is the phone's screen)
  *
  * Coordinates are screen pixels. Input injected by the shell user reaches every
  * screen, including Google sign-in and Android permission dialogs, which ignore
@@ -26,6 +27,10 @@ import kotlin.system.exitProcess
  */
 object InputInjector {
     private lateinit var inject: (InputEvent) -> Unit
+    private var displayId = 0
+    private val setDisplayId by lazy {
+        InputEvent::class.java.getMethod("setDisplayId", Int::class.javaPrimitiveType)
+    }
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -58,6 +63,7 @@ object InputInjector {
                 if (pts.isNotEmpty()) swipe(pts, ms)
             }
             "key" -> key(parts[1].toInt())
+            "display" -> displayId = parts[1].toInt()
         }
     }
 
@@ -99,6 +105,7 @@ object InputInjector {
     private fun touch(action: Int, downTime: Long, x: Float, y: Float) {
         val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, y, 1f, 1f, 0, 1f, 1f, 0, 0)
         event.source = InputDevice.SOURCE_TOUCHSCREEN
+        if (displayId != 0) setDisplayId.invoke(event, displayId)
         inject(event)
         event.recycle()
     }
@@ -107,6 +114,7 @@ object InputInjector {
         val now = SystemClock.uptimeMillis()
         for (action in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
             val event = KeyEvent(now, now, action, code, 0, 0, KeyCharacterMapVirtual, 0, 0, InputDevice.SOURCE_KEYBOARD)
+            if (displayId != 0) setDisplayId.invoke(event, displayId)
             inject(event)
         }
     }

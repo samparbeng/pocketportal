@@ -205,6 +205,22 @@ object AdbBridge {
         }
     }
 
+    /**
+     * Runs a program from this APK as the shell user with app_process and hands its
+     * stream (stdin/stdout) to [onOpen] on the worker thread, or null if that failed.
+     */
+    fun startProgram(context: Context, mainClass: Class<*>, args: String, onOpen: (io.github.muntashirakon.adb.AdbStream?) -> Unit) {
+        val app = context.applicationContext
+        worker.execute {
+            val stream = runCatching {
+                if (!connect(app)) return@runCatching null
+                val apk = app.applicationInfo.sourceDir
+                manager(app).openStream("shell:CLASSPATH=$apk app_process / ${mainClass.name} $args 2>/dev/null")
+            }.onFailure { Log.w(TAG, "couldn't start ${mainClass.simpleName}", it) }.getOrNull()
+            onOpen(stream)
+        }
+    }
+
     // ---- Touch input through the shell ---------------------------------------------------
 
     /** [InputInjector] is running, so headset touches can go through it. */

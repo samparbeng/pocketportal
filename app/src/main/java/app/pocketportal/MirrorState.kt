@@ -47,6 +47,8 @@ object MirrorState {
     val sound = MutableStateFlow(true)
     /** What the phone's own screen does while sharing. */
     val screenMode = MutableStateFlow(ScreenMode.Normal)
+    /** Show a Samsung DeX desktop in the headset instead of the phone's screen (needs [AdbBridge]). */
+    val dex = MutableStateFlow(false)
 
     private var loaded = false
 
@@ -57,6 +59,7 @@ object MirrorState {
         pin.value = prefs.getString("pin", null) ?: newPin().also { prefs.edit().putString("pin", it).apply() }
         quality.value = runCatching { Quality.valueOf(prefs.getString("quality", "")!!) }.getOrDefault(Quality.Balanced)
         sound.value = prefs.getBoolean("sound", true)
+        dex.value = prefs.getBoolean("dex", false)
         screenMode.value = runCatching { ScreenMode.valueOf(prefs.getString("screen", "")!!) }.getOrDefault(ScreenMode.Normal)
     }
 
@@ -73,6 +76,11 @@ object MirrorState {
     fun setScreenMode(context: Context, value: ScreenMode) {
         screenMode.value = value
         prefs(context).edit().putString("screen", value.name).apply()
+    }
+
+    fun setDex(context: Context, value: Boolean) {
+        dex.value = value
+        prefs(context).edit().putBoolean("dex", value).apply()
     }
 
     fun setSound(context: Context, value: Boolean) {

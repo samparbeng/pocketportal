@@ -388,6 +388,21 @@ private fun MoreOptions(address: String?, running: Boolean) {
         }
 
         HorizontalDivider(color = Color(0xFF26303B))
+        val dex by MirrorState.dex.collectAsStateWithLifecycle()
+        Text("The headset shows", color = Muted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !dex, enabled = !running, onClick = { MirrorState.setDex(context, false) }, label = { Text("Phone screen") })
+            FilterChip(selected = dex, enabled = !running, onClick = { MirrorState.setDex(context, true) }, label = { Text("DeX desktop") })
+        }
+        if (dex) Text(
+            if (paired) "A Samsung DeX desktop opens in the headset, separate from the phone's screen. " +
+                "Apps you open there move back to the phone when you disconnect."
+            else "DeX needs the one-time Wireless debugging setup (Phone screen while sharing → Off → " +
+                "Set up screen-off). Until then the headset shows the phone screen.",
+            color = Muted, fontSize = 13.sp,
+        )
+
+        HorizontalDivider(color = Color(0xFF26303B))
         Text("Use a web browser instead", color = Muted)
         if (address != null) {
             Text(

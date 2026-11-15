@@ -101,6 +101,13 @@ class MirrorService : Service() {
     private var codec: VideoCodec? = null
     private val brokenCodecs = mutableSetOf<VideoCodec>()
     private var encoder: VideoEncoder? = null
+    /** Samsung DeX on its own display, streamed instead of the phone's screen; see [DexSession]. */
+    private var dex: DexSession? = null
+    private var dexBitrate = 0
+    /** DeX failed once this session; don't keep retrying. */
+    private var dexFailed = false
+    /** The display the input helper was last pointed at. */
+    @Volatile private var inputDisplay = 0
     /** Adaptive bitrate: what the network can currently carry, between [MIN_BITRATE] and the preset's. */
     private var targetBitrate = 0
     private var calmTicks = 0
@@ -191,7 +198,7 @@ class MirrorService : Service() {
                 MirrorState.viewers.value = it
                 handler.post { chooseMode() }
             },
-            onNeedKeyframe = { encoder?.requestKeyframe() },
+            onNeedKeyframe = { encoder?.requestKeyframe() ?: dex?.requestKeyframe() },
         ).also { it.start() }
 
         val manager = getSystemService(MediaProjectionManager::class.java)
@@ -256,11 +263,16 @@ class MirrorService : Service() {
      * the remote-touch accessibility service.
      */
     private fun handleInput(m: JSONObject) {
-        val metrics = realScreenMetrics(this)
+        // With DeX showing, input goes to its display, at its size.
+        val dexDisplay = dex?.displayId ?: -1
+        val (width, height) = if (dexDisplay >= 0) DexSession.WIDTH to DexSession.HEIGHT
+        else realScreenMetrics(this).let { it.widthPixels to it.heightPixels }
+        val target = maxOf(dexDisplay, 0)
+        if (target != inputDisplay && AdbBridge.sendInput("display $target")) inputDisplay = target
         fun px(x: Double, y: Double) = "%.1f %.1f".format(
             java.util.Locale.US,
-            x.coerceIn(0.0, 1.0) * (metrics.widthPixels - 1),
-            y.coerceIn(0.0, 1.0) * (metrics.heightPixels - 1),
+            x.coerceIn(0.0, 1.0) * (width - 1),
+            y.coerceIn(0.0, 1.0) * (height - 1),
         )
         val line = when (m.optString("t")) {
             "tap" -> "tap ${px(m.getDouble("x"), m.getDouble("y"))}"
@@ -271,7 +283,8 @@ class MirrorService : Service() {
                 "swipe ${m.optLong("ms", 300).coerceIn(1, 10_000)} $coords"
             }
             // Keys only when remote touch is off: its global actions also cover Quick settings.
-            "key" -> if (TouchService.instance != null) null else when (m.optString("k")) {
+            // On DeX they go to its display, which the accessibility service can't do.
+            "key" -> if (TouchService.instance != null && dexDisplay < 0) null else when (m.optString("k")) {
                 "back" -> "key 4"
                 "home" -> "key 3"
                 "recents" -> "key 187"
@@ -296,6 +309,11 @@ class MirrorService : Service() {
     }
 
     private fun sendVideoConfig() {
+        dex?.let { session ->
+            val config = session.config ?: return
+            server?.broadcastText(JSONObject(config.toString()).put("type", "video").put("fps", quality.videoFps).toString())
+            return
+        }
         val enc = encoder ?: return
         val codecString = enc.codecString ?: return
         server?.broadcastText(
@@ -319,7 +337,8 @@ class MirrorService : Service() {
         override fun run() {
             val srv = server ?: return
             val enc = encoder
-            if (enc != null && srv.hasViewers) {
+            val session = dex
+            if ((enc != null || session != null) && srv.hasViewers) {
                 val (queued, dropped) = srv.takeCongestion()
                 when {
                     dropped -> { targetBitrate /= 2; calmTicks = 0 }
@@ -327,7 +346,11 @@ class MirrorService : Service() {
                     queued <= 1 && ++calmTicks >= 4 -> { targetBitrate = targetBitrate * 11 / 10; calmTicks = 0 }
                 }
                 targetBitrate = targetBitrate.coerceIn(MIN_BITRATE, quality.bitrate)
-                enc.setBitrate(targetBitrate)
+                if (enc != null) enc.setBitrate(targetBitrate)
+                else if (session != null && targetBitrate != dexBitrate) {
+                    dexBitrate = targetBitrate
+                    session.setBitrate(targetBitrate)
+                }
             }
             handler.postDelayed(this, 500)
         }
@@ -353,6 +376,7 @@ class MirrorService : Service() {
         if (codec != null && codec in client.codecs) {
             sendVideoConfig()
             encoder?.requestKeyframe()
+            dex?.requestKeyframe()
         } else if (padded != null) {
             dirty = true
             encodeAndSend()
@@ -378,9 +402,52 @@ class MirrorService : Service() {
         attachSurface()
     }
 
+    /**
+     * With DeX chosen and a viewer that decodes video, streams DeX's display instead
+     * of the phone's screen and pauses the phone capture. DeX stays up while viewers
+     * come and go; it's restarted only if the codec has to change.
+     */
+    private fun showDex(display: VirtualDisplay): Boolean {
+        if (!MirrorState.dex.value || !AdbBridge.paired.value || dexFailed) return false
+        val wanted = codec
+        if (wanted != null && dex?.codec != wanted) startDex(wanted)
+        if (dex == null) return false
+        val oldReader = reader
+        val oldEncoder = encoder
+        reader = null
+        encoder = null
+        display.surface = null
+        oldReader?.close()
+        oldEncoder?.release()
+        return true
+    }
+
+    private fun startDex(c: VideoCodec) {
+        dex?.stop()
+        dexBitrate = targetBitrate
+        lateinit var session: DexSession
+        session = DexSession(
+            this, c, quality,
+            onConfig = { sendVideoConfig() },
+            onPacket = { packet, key -> server?.broadcastVideo(packet, key) },
+            onEnded = {
+                handler.post {
+                    if (dex !== session) return@post
+                    Log.w(TAG, "DeX ended; showing the phone screen")
+                    dex = null
+                    dexFailed = true
+                    MirrorState.error.value = "DeX couldn't start or stopped, so the headset shows the phone screen."
+                    attachSurface()
+                }
+            },
+        )
+        dex = session
+    }
+
     /** Points the virtual display at a fresh encoder or ImageReader sized for the current screen. */
     private fun attachSurface() {
         val display = virtualDisplay ?: return
+        if (showDex(display)) return
         val metrics = realScreenMetrics(this)
         val (w, h) = scaledSize(metrics.widthPixels, metrics.heightPixels)
         val oldReader = reader
@@ -490,6 +557,8 @@ class MirrorService : Service() {
         scope.cancel()
         if (advertising) runCatching { getSystemService(NsdManager::class.java).unregisterService(nsdListener) }
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
+        dex?.stop()
+        dex = null
         AdbBridge.stopInjector()
         PhoneScreen.restore(this)
         wakeLock?.takeIf { it.isHeld }?.release()
