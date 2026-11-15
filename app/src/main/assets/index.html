@@ -21,6 +21,9 @@
   #status { position:absolute; top:12px; left:50%; transform:translateX(-50%); background:rgba(22,28,35,.92); border:1px solid var(--line); border-radius:999px; padding:6px 16px; color:var(--muted); font-size:14px; white-space:nowrap; }
   #status.warn { color:var(--warn); }
   #status:empty { display:none; }
+  #stats { position:absolute; top:12px; right:12px; background:rgba(22,28,35,.85); border:1px solid var(--line); border-radius:10px; padding:4px 10px; color:var(--muted); font:13px/1.4 ui-monospace, monospace; white-space:nowrap; pointer-events:none; }
+  #stats b { color:var(--text); font-weight:600; }
+  #stats:empty, #stats.off { display:none; }
   #pin { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:var(--bg); }
   #pin.open { display:flex; }
   #pin form { background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:28px; width:min(360px, calc(100% - 32px)); display:flex; flex-direction:column; gap:14px; }
@@ -34,6 +37,7 @@
 <div id="stage">
   <canvas id="screen" width="9" height="16"></canvas>
   <div id="status">Connecting…</div>
+  <div id="stats"></div>
   <div id="pin">
     <form id="pinForm">
       <h1>Pocket Portal</h1>
@@ -57,6 +61,7 @@
   <button data-key="quick">Quick settings</button>
   <button id="kbd">⌨ Keyboard</button>
   <button id="sound" hidden>🔊 Sound</button>
+  <button id="statsBtn">⏱ Stats</button>
   <button id="full">⛶ Full screen</button>
 </div>
 <script>
@@ -83,8 +88,7 @@
   }
 
   // Phone audio arrives as 40 ms chunks of 16-bit stereo PCM, each scheduled
-  // right after the previous one. AudioWorklet would be smoother but needs
-  // HTTPS, and this page is served over plain HTTP on the local network.
+  // right after the previous one.
   const sound = {
     ctx: null, next: 0, rate: 48000, available: false,
     muted: (() => { try { return localStorage.getItem('pocketportal-muted') === '1'; } catch { return false; } })(),
@@ -148,23 +152,73 @@
     connect();
   });
 
-  // H.264 video, decoded by the headset's hardware through WebCodecs. Browsers only
-  // offer WebCodecs on secure (HTTPS) pages; without it the phone sends JPEG frames.
+  // Clock sync with the phone, for the latency readout. Each round trip gives an
+  // estimate of (phone clock − page clock); the one with the shortest round trip wins.
+  const clock = {
+    samples: [], offset: null,
+    ping() { send({ t: 'sync', c: performance.now() }); },
+    pong(msg) {
+      const now = performance.now(), rtt = now - msg.c;
+      if (!(rtt >= 0)) return;
+      this.samples.push({ rtt, offset: msg.s / 1000 - (msg.c + rtt / 2) });
+      if (this.samples.length > 10) this.samples.shift();
+      this.offset = this.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a)).offset;
+    },
+    reset() { this.samples = []; this.offset = null; },
+  };
+
+  // What the stats pill shows: codec, frames drawn per second, bitrate received, and
+  // latency from the moment the phone captured a frame to the moment it's drawn here.
+  const stats = {
+    el: document.getElementById('stats'), codec: '', frames: 0, bytes: 0, latency: null,
+    on: (() => { try { return localStorage.getItem('pocketportal-stats') !== '0'; } catch { return true; } })(),
+    frame(captureUs) {
+      this.frames++;
+      if (captureUs == null || clock.offset == null) return;
+      const ms = performance.now() + clock.offset - captureUs / 1000;
+      if (ms < 0 || ms > 5000) return; // clocks not comparable on this phone
+      this.latency = this.latency == null ? ms : this.latency * 0.9 + ms * 0.1;
+    },
+    tick() {
+      const parts = [];
+      if (this.codec) parts.push(`<b>${this.codec}</b>`);
+      parts.push(`${this.frames} fps`, `${(this.bytes * 8 / 1e6).toFixed(1)} Mbps`);
+      if (this.latency != null) parts.push(`<b>${Math.round(this.latency)} ms</b>`);
+      this.el.innerHTML = ws && ws.readyState === 1 && (this.frames || this.bytes) ? parts.join(' · ') : '';
+      this.el.classList.toggle('off', !this.on);
+      this.frames = 0; this.bytes = 0;
+    },
+    toggle() {
+      this.on = !this.on;
+      try { localStorage.setItem('pocketportal-stats', this.on ? '1' : '0'); } catch {}
+      this.el.classList.toggle('off', !this.on);
+    },
+  };
+  setInterval(() => stats.tick(), 1000);
+  document.getElementById('statsBtn').addEventListener('click', () => stats.toggle());
+
+  // H.265 or H.264 video, decoded by the headset's hardware through WebCodecs. Browsers
+  // only offer WebCodecs on secure (HTTPS) pages; without it the phone sends JPEG frames.
+  // If decoding fails, the page reconnects asking for the next codec down.
   const video = {
-    supported: null, failed: false, decoder: null, waitForKey: true,
+    checked: false, h265: false, h264: false, current: null, decoder: null, waitForKey: true,
+    async supports(codec) {
+      try { return !!(await VideoDecoder.isConfigSupported({ codec, optimizeForLatency: true })).supported; } catch { return false; }
+    },
     async check() {
-      if (this.supported !== null) return this.supported;
-      this.supported = false;
-      if (window.isSecureContext && 'VideoDecoder' in window) {
-        try {
-          const r = await VideoDecoder.isConfigSupported({ codec: 'avc1.42e01f', optimizeForLatency: true });
-          this.supported = !!r.supported;
-        } catch {}
+      if (!this.checked) {
+        this.checked = true;
+        if (window.isSecureContext && 'VideoDecoder' in window) {
+          this.h265 = await this.supports('hvc1.1.6.L123.B0');
+          this.h264 = await this.supports('avc1.42e01f');
+        }
       }
-      return this.supported;
+      return this.h265 ? 'h265' : this.h264 ? 'h264' : null;
     },
     configure(msg) {
       if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
+      this.current = msg.name || 'H.264';
+      stats.codec = this.current;
       this.decoder = new VideoDecoder({ output: f => this.draw(f), error: e => this.fail(e) });
       this.decoder.configure({
         codec: msg.codec, codedWidth: msg.width, codedHeight: msg.height,
@@ -190,12 +244,13 @@
         canvas.width = frame.displayWidth; canvas.height = frame.displayHeight; layout();
       }
       ctx.drawImage(frame, 0, 0);
+      stats.frame(frame.timestamp);
       frame.close();
     },
-    // If this headset can't decode the stream after all, reconnect and ask for JPEG.
+    // If this headset can't decode the stream after all, reconnect and ask for the next codec down.
     fail(e) {
-      console.warn('H.264 decoding failed, falling back to JPEG', e);
-      this.failed = true;
+      console.warn(`${this.current} decoding failed, trying the next codec`, e);
+      if (this.current === 'H.265') this.h265 = false; else this.h264 = false;
       if (ws) ws.close();
     },
     reset() {
@@ -208,10 +263,12 @@
     clearTimeout(retry);
     if (!pin) return askPin();
     setStatus('Connecting…');
-    const h264 = !video.failed && await video.check();
+    const codec = await video.check();
     video.reset();
+    clock.reset();
+    stats.codec = codec ? '' : 'JPEG'; stats.latency = null;
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${scheme}://${location.host}/ws?k=${encodeURIComponent(pin)}${h264 ? '&v=h264' : ''}`);
+    ws = new WebSocket(`${scheme}://${location.host}/ws?k=${encodeURIComponent(pin)}${codec ? '&v=' + codec : ''}`);
     ws.binaryType = 'arraybuffer';
     // The phone only says hello after the PIN checks out, so that's when it's worth saving.
     let accepted = false, opened = false;
@@ -220,7 +277,12 @@
       if (typeof e.data === 'string') {
         const msg = JSON.parse(e.data);
         if (msg.type === 'hello') {
-          if (!accepted) { accepted = true; store.set(pin); }
+          if (!accepted) {
+            accepted = true; store.set(pin);
+            if (window.PocketPortalApp && window.PocketPortalApp.connected) window.PocketPortalApp.connected();
+          }
+          // A burst of clock pings to start, then occasional ones to follow drift.
+          for (let i = 0; i < 5; i++) setTimeout(() => clock.ping(), i * 200);
           inputOn = msg.input; showStatus();
           sound.available = !!msg.audio;
           if (msg.rate) sound.rate = msg.rate;
@@ -229,10 +291,13 @@
           sound.label();
         } else if (msg.type === 'video') {
           video.configure(msg);
+        } else if (msg.type === 'sync') {
+          clock.pong(msg);
         }
         return;
       }
       const data = e.data, socket = ws;
+      stats.bytes += data.byteLength;
       // First byte: 0x01 sound, 0x02 H.264, anything else is a JPEG (0xFF).
       const kind = new Uint8Array(data, 0, 1)[0];
       if (kind === 0x01) return sound.play(data);
@@ -246,6 +311,7 @@
           }
           ctx.drawImage(bmp, 0, 0);
           bmp.close();
+          stats.frame(null);
         } catch (err) { console.warn(err); }
         if (socket.readyState === 1) socket.send('a');
       });
@@ -263,6 +329,7 @@
     };
   }
   setInterval(() => { if (ws && ws.readyState === 1) ws.send('p'); }, 10000);
+  setInterval(() => clock.ping(), 5000);
 
   function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 

@@ -15,6 +15,7 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import org.json.JSONObject
 import javax.net.ssl.SSLContext
 import kotlin.concurrent.thread
 
@@ -33,7 +34,8 @@ class MirrorServer(
     private val redirectPort: Int,
     private val ssl: SSLContext,
     private val page: ByteArray,
-    private val pin: () -> String,
+    /** True for the PIN or a paired headset's key. */
+    private val authorize: (String) -> Boolean,
     private val onConnected: (Client) -> Unit,
     private val onMessage: (String) -> Unit,
     private val onViewersChanged: (Int) -> Unit,
@@ -101,11 +103,30 @@ class MirrorServer(
     fun broadcastAudio(chunk: ByteArray) = clients.forEach { it.offerAudio(chunk) }
 
     fun broadcastVideo(packet: ByteArray, keyframe: Boolean) =
-        clients.forEach { if (it.h264) it.offerVideo(packet, keyframe) }
+        clients.forEach { if (it.codecs.isNotEmpty()) it.offerVideo(packet, keyframe) }
+
+    /**
+     * How far the slowest viewer has fallen behind since the last call: the most
+     * video packets that sat waiting to be sent, and whether a backlog had to be
+     * dropped. Read twice a second to steer the bitrate.
+     */
+    fun takeCongestion(): Pair<Int, Boolean> {
+        var worst = 0
+        var dropped = false
+        clients.forEach {
+            val (queued, drop) = it.takeCongestion()
+            worst = maxOf(worst, queued)
+            dropped = dropped || drop
+        }
+        return worst to dropped
+    }
 
     private fun handle(socket: Socket) {
         try {
             socket.tcpNoDelay = true
+            // A small send buffer keeps the backlog in our queue, where it can be dropped
+            // and noticed, instead of hiding seconds of video inside the kernel.
+            socket.sendBufferSize = SEND_BUFFER
             socket.soTimeout = 10_000
             val input = BufferedInputStream(socket.getInputStream())
             val out = socket.getOutputStream()
@@ -142,9 +163,14 @@ class MirrorServer(
         )
         out.flush()
 
-        val client = Client(socket, out, h264 = query["v"] == "h264")
-        val given = query["k"].orEmpty().toByteArray()
-        if (!MessageDigest.isEqual(given, pin().toByteArray())) {
+        // v=h265 means the viewer decodes both H.265 and H.264; v=h264 only H.264.
+        val codecs = when (query["v"]) {
+            "h265" -> setOf(VideoCodec.H265, VideoCodec.H264)
+            "h264" -> setOf(VideoCodec.H264)
+            else -> emptySet()
+        }
+        val client = Client(socket, out, codecs)
+        if (!authorize(query["k"].orEmpty())) {
             // Slow down guessing, then tell the page why it was refused. Wait for the
             // browser's close reply: closing with its bytes unread sends a TCP reset,
             // and browsers then drop the 4001 code and report a plain network error.
@@ -176,8 +202,8 @@ class MirrorServer(
     inner class Client(
         private val socket: Socket,
         private val out: OutputStream,
-        /** The viewer can decode H.264 (WebCodecs); otherwise it gets JPEG frames. */
-        val h264: Boolean,
+        /** Video codecs the viewer can decode (WebCodecs); empty means it gets JPEG frames. */
+        val codecs: Set<VideoCodec>,
     ) {
         private val lock = Object()
         private var frame: ByteArray? = null
@@ -191,6 +217,8 @@ class MirrorServer(
         // drops the oldest so sound never falls more than MAX_AUDIO_QUEUE behind.
         private val audio = ArrayDeque<ByteArray>()
         private var inFlight = 0
+        private var maxQueued = 0
+        private var dropped = false
         @Volatile private var open = true
         @Volatile private var closeSent = false
         /** The viewer's mute button turns this off. */
@@ -207,14 +235,23 @@ class MirrorServer(
                 if (waitingForKeyframe && !keyframe) return
                 waitingForKeyframe = false
                 video.addLast(packet)
+                maxQueued = maxOf(maxQueued, video.size)
                 if (video.size > MAX_VIDEO_QUEUE) {
                     video.clear()
                     waitingForKeyframe = true
                     needKeyframe = true
+                    dropped = true
                 }
                 lock.notifyAll()
             }
             if (needKeyframe) onNeedKeyframe()
+        }
+
+        fun takeCongestion(): Pair<Int, Boolean> = synchronized(lock) {
+            val result = maxQueued to dropped
+            maxQueued = video.size
+            dropped = false
+            result
         }
 
         fun offerText(text: String) = synchronized(lock) {
@@ -281,14 +318,19 @@ class MirrorServer(
                 when (opcode) {
                     OP_TEXT -> {
                         val text = String(payload)
-                        when (text) {
-                            "a" -> synchronized(lock) {
+                        when {
+                            text == "a" -> synchronized(lock) {
                                 if (inFlight > 0) inFlight--
                                 lock.notifyAll()
                             }
-                            "p" -> Unit
-                            AUDIO_ON -> wantsAudio = true
-                            AUDIO_OFF -> wantsAudio = false
+                            text == "p" -> Unit
+                            text == AUDIO_ON -> wantsAudio = true
+                            text == AUDIO_OFF -> wantsAudio = false
+                            // Clock sync for the latency readout: echo the viewer's time with ours.
+                            text.startsWith(SYNC_PREFIX) -> {
+                                val c = JSONObject(text).optDouble("c")
+                                offerText(JSONObject().put("type", "sync").put("c", c).put("s", System.nanoTime() / 1000).toString())
+                            }
                             else -> runCatching { onMessage(text) }.onFailure { Log.w(TAG, "bad message", it) }
                         }
                     }
@@ -389,6 +431,8 @@ class MirrorServer(
         const val AUDIO_ON = """{"t":"audio","on":true}"""
         const val AUDIO_OFF = """{"t":"audio","on":false}"""
         const val MAX_MESSAGE = 1L shl 20
+        const val SYNC_PREFIX = """{"t":"sync""""
+        const val SEND_BUFFER = 192 * 1024
         const val OP_TEXT = 0x1
         const val OP_BINARY = 0x2
         const val OP_CLOSE = 0x8

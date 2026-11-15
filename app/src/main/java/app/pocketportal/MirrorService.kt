@@ -56,6 +56,9 @@ class MirrorService : Service() {
         private const val EXTRA_RESULT_CODE = "resultCode"
         private const val EXTRA_DATA = "data"
         private const val ACTION_STOP = "app.pocketportal.STOP"
+        private const val MIN_BITRATE = 1_500_000
+        /** Video packets waiting to be sent before the link counts as congested (~50 ms at 60 fps). */
+        private const val CONGESTED_QUEUE = 3
 
         fun start(context: Context, resultCode: Int, data: Intent) {
             val intent = Intent(context, MirrorService::class.java)
@@ -92,12 +95,15 @@ class MirrorService : Service() {
     private lateinit var quality: Quality
 
     // Capture-thread state. The virtual display renders into exactly one surface:
-    // the H.264 encoder's when every viewer can decode it, otherwise an
-    // ImageReader whose frames are sent as JPEG.
-    private enum class Mode { JPEG, H264 }
-    private var mode = Mode.JPEG
-    private var h264Available = false
+    // a hardware video encoder's when every viewer can decode its codec (H.265
+    // first, then H.264), otherwise an ImageReader whose frames are sent as JPEG.
+    /** The codec being streamed, or null for JPEG. */
+    private var codec: VideoCodec? = null
+    private val brokenCodecs = mutableSetOf<VideoCodec>()
     private var encoder: VideoEncoder? = null
+    /** Adaptive bitrate: what the network can currently carry, between [MIN_BITRATE] and the preset's. */
+    private var targetBitrate = 0
+    private var calmTicks = 0
     private var captureWidth = 0
     private var captureHeight = 0
     private var padded: Bitmap? = null
@@ -169,13 +175,13 @@ class MirrorService : Service() {
     private fun begin(resultCode: Int, data: Intent) {
         quality = MirrorState.quality.value
         val page = assets.open("index.html").use { it.readBytes() }
-        h264Available = VideoEncoder.isAvailable()
+        targetBitrate = quality.bitrate
         server = MirrorServer(
             port = MirrorState.PORT,
             redirectPort = MirrorState.REDIRECT_PORT,
             ssl = CertStore.sslContext(),
             page = page,
-            pin = { MirrorState.pin.value },
+            authorize = MirrorState::isAuthorized,
             onConnected = { client ->
                 sendHello()
                 handler.post { onViewerJoined(client) }
@@ -204,6 +210,7 @@ class MirrorService : Service() {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader.surface, null, handler
         )
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, handler)
+        handler.postDelayed(adaptBitrate, 500)
 
         wifiLock = getSystemService(WifiManager::class.java)
             .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "pocketportal")
@@ -252,15 +259,40 @@ class MirrorService : Service() {
 
     private fun sendVideoConfig() {
         val enc = encoder ?: return
-        val codec = enc.codecString ?: return
+        val codecString = enc.codecString ?: return
         server?.broadcastText(
             JSONObject()
                 .put("type", "video")
-                .put("codec", codec)
+                .put("codec", codecString)
+                .put("name", enc.codec.label)
+                .put("fps", quality.videoFps)
                 .put("width", enc.width)
                 .put("height", enc.height)
                 .toString()
         )
+    }
+
+    /**
+     * Adaptive bitrate, twice a second: back off quickly when a viewer's queue
+     * builds up (the network can't keep up), creep back up after a few calm
+     * seconds. Lower bitrate costs some sharpness but keeps the picture live.
+     */
+    private val adaptBitrate = object : Runnable {
+        override fun run() {
+            val srv = server ?: return
+            val enc = encoder
+            if (enc != null && srv.hasViewers) {
+                val (queued, dropped) = srv.takeCongestion()
+                when {
+                    dropped -> { targetBitrate /= 2; calmTicks = 0 }
+                    queued > CONGESTED_QUEUE -> { targetBitrate = targetBitrate * 7 / 10; calmTicks = 0 }
+                    queued <= 1 && ++calmTicks >= 4 -> { targetBitrate = targetBitrate * 11 / 10; calmTicks = 0 }
+                }
+                targetBitrate = targetBitrate.coerceIn(MIN_BITRATE, quality.bitrate)
+                enc.setBitrate(targetBitrate)
+            }
+            handler.postDelayed(this, 500)
+        }
     }
 
     /**
@@ -269,7 +301,7 @@ class MirrorService : Service() {
      */
     private fun scaledSize(width: Int, height: Int): Pair<Int, Int> {
         val scale = minOf(1f, quality.maxDimension.toFloat() / maxOf(width, height))
-        val align = if (mode == Mode.H264) 16 else 2
+        val align = if (codec != null) 16 else 2
         fun fit(side: Int) = maxOf(align, ((side * scale).toInt() + align / 2) / align * align)
         return fit(width) to fit(height)
     }
@@ -280,7 +312,7 @@ class MirrorService : Service() {
         }
 
     private fun onViewerJoined(client: MirrorServer.Client) {
-        if (client.h264 && mode == Mode.H264) {
+        if (codec != null && codec in client.codecs) {
             sendVideoConfig()
             encoder?.requestKeyframe()
         } else if (padded != null) {
@@ -289,12 +321,14 @@ class MirrorService : Service() {
         }
     }
 
-    /** H.264 only when every viewer can decode it; one older browser drops everyone back to JPEG. */
+    /** The best codec every viewer can decode; one older browser drops everyone back to JPEG. */
     private fun chooseMode() {
         val viewers = server?.viewers ?: return
-        val wanted = if (h264Available && viewers.isNotEmpty() && viewers.all { it.h264 }) Mode.H264 else Mode.JPEG
-        if (wanted == mode) return
-        mode = wanted
+        val wanted = if (viewers.isEmpty()) null else VideoCodec.entries.firstOrNull { c ->
+            c.available && c !in brokenCodecs && viewers.all { c in it.codecs }
+        }
+        if (wanted == codec) return
+        codec = wanted
         attachSurface()
     }
 
@@ -315,16 +349,24 @@ class MirrorService : Service() {
         val oldEncoder = encoder
         reader = null
         encoder = null
-        val surface = if (mode == Mode.H264) {
+        val active = codec
+        val surface = if (active != null) {
             val enc = try {
-                VideoEncoder(w, h, quality, handler) { packet, key -> server?.broadcastVideo(packet, key) }
+                VideoEncoder(active, w, h, quality, handler) { packet, key -> server?.broadcastVideo(packet, key) }
             } catch (e: Exception) {
-                Log.w(TAG, "H.264 encoder failed, staying on JPEG", e)
-                h264Available = false
-                mode = Mode.JPEG
-                return attachSurface()
+                // Try the next codec down (H.265 → H.264 → JPEG).
+                Log.w(TAG, "${active.label} encoder failed", e)
+                // Leave the current surface in place; the retry below replaces and releases it.
+                reader = oldReader
+                encoder = oldEncoder
+                brokenCodecs += active
+                codec = null
+                chooseMode()
+                if (codec == null) attachSurface()
+                return
             }
             enc.onConfigChanged = { sendVideoConfig() }
+            enc.setBitrate(targetBitrate)
             encoder = enc
             enc.surface
         } else {

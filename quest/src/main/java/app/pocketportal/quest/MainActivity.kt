@@ -73,6 +73,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 private val Accent = Color(0xFF4FA3FF)
 private val Muted = Color(0xFFA9B4C0)
@@ -83,6 +85,8 @@ private const val LEGACY_PORT = 8080
 class MainActivity : ComponentActivity() {
 
     private lateinit var finder: PhoneFinder
+    /** Counts each time the panel comes back (e.g. the headset wakes), to reconnect by itself. */
+    private val starts = MutableStateFlow(0)
 
     private val localNetwork = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         finder.start()
@@ -100,13 +104,14 @@ class MainActivity : ComponentActivity() {
                     surface = Color(0xFF101418),
                 ),
             ) {
-                Surface(Modifier.fillMaxSize()) { App(finder) }
+                Surface(Modifier.fillMaxSize()) { App(finder, starts) }
             }
         }
     }
 
     override fun onStart() {
         super.onStart()
+        starts.value++
         // Android 17+ asks before an app may talk to devices on the local network.
         val needsPermission = Build.VERSION.SDK_INT >= 37 && ContextCompat.checkSelfPermission(
             this, Manifest.permission.ACCESS_LOCAL_NETWORK
@@ -121,26 +126,26 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun App(finder: PhoneFinder) {
+private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("quest", Context.MODE_PRIVATE) }
+    val pairingKey = remember { Pairing.key(context) }
     var phone by remember { mutableStateOf<Phone?>(null) }
     var pin by remember { mutableStateOf<String?>(null) }
     // The phone whose PIN we're asking for, and why we're asking again.
     var asking by remember { mutableStateOf<Phone?>(null) }
     var pinError by remember { mutableStateOf<String?>(null) }
+    // Open the phone by itself when it appears, until the user backs out; again each time the panel returns.
+    var autoOpen by remember { mutableStateOf(true) }
+    val started by starts.collectAsStateWithLifecycle()
+    LaunchedEffect(started) { autoOpen = true }
 
     fun pinKey(p: Phone) = "pin:${p.host}"
     fun certKey(p: Phone) = "cert:${p.host}"
+    // A typed PIN wins; otherwise this headset's pairing key, which works once the phone has scanned it.
     fun connect(p: Phone) {
-        val saved = prefs.getString(pinKey(p), null)
-        if (saved != null) {
-            phone = p
-            pin = saved
-        } else {
-            pinError = null
-            asking = p
-        }
+        phone = p
+        pin = prefs.getString(pinKey(p), null) ?: pairingKey
     }
 
     val current = phone
@@ -154,24 +159,28 @@ private fun App(finder: PhoneFinder) {
                 // otherwise use the one remembered from the first connection.
                 trustedFingerprint = current.fingerprint ?: prefs.getString(certKey(current), null),
                 onTrust = { prefs.edit().putString(certKey(current), it).apply() },
-                onClose = { phone = null; pin = null },
+                onClose = { phone = null; pin = null; autoOpen = false },
+                onConnected = { prefs.edit().putString("last", current.name).apply() },
                 onWrongPin = {
+                    pinError = if (currentPin == pairingKey) null
+                    else "That PIN didn't work. Check the PIN shown in Pocket Portal on the phone."
                     prefs.edit().remove(pinKey(current)).apply()
                     pin = null
-                    pinError = "That PIN didn't work. Check the PIN shown in Pocket Portal on the phone."
+                    autoOpen = false // don't loop back into a phone that refused us
                     asking = current
                 },
             )
         }
     } else {
-        PhoneList(finder, onOpen = ::connect)
+        PhoneList(finder, autoOpen, onOpen = ::connect)
     }
 
     asking?.let { target ->
         PinDialog(
             phone = target,
             error = pinError,
-            onDismiss = { asking = null; phone = null },
+            onDismiss = { asking = null; phone = null; autoOpen = false },
+            onScanned = { asking = null; connect(target) },
             onSubmit = { code ->
                 prefs.edit().putString(pinKey(target), code).apply()
                 asking = null
@@ -183,7 +192,8 @@ private fun App(finder: PhoneFinder) {
 }
 
 @Composable
-private fun PinDialog(phone: Phone, error: String?, onDismiss: () -> Unit, onSubmit: (String) -> Unit) {
+private fun PinDialog(phone: Phone, error: String?, onDismiss: () -> Unit, onScanned: () -> Unit, onSubmit: (String) -> Unit) {
+    val context = LocalContext.current
     var code by remember { mutableStateOf("") }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
@@ -195,7 +205,14 @@ private fun PinDialog(phone: Phone, error: String?, onDismiss: () -> Unit, onSub
         title = { Text("Connect to ${phone.name}") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Enter the 6-digit PIN shown in Pocket Portal on the phone.", color = Muted)
+                Text(
+                    "This headset isn't paired with ${phone.name} yet. In Pocket Portal on the phone, tap " +
+                        "Scan headset code and scan this:",
+                    color = Muted,
+                )
+                QrCode(Pairing.pairingCode(context), 200.dp, Modifier.align(Alignment.CenterHorizontally))
+                Button(onClick = onScanned, Modifier.fillMaxWidth()) { Text("I scanned it, connect") }
+                Text("Or enter the 6-digit PIN shown under More options on the phone:", color = Muted)
                 OutlinedTextField(
                     value = code,
                     onValueChange = { value -> code = value.filter(Char::isDigit).take(6) },
@@ -218,10 +235,16 @@ private fun PinDialog(phone: Phone, error: String?, onDismiss: () -> Unit, onSub
 }
 
 @Composable
-private fun PhoneList(finder: PhoneFinder, onOpen: (Phone) -> Unit) {
+private fun PhoneList(finder: PhoneFinder, autoOpen: Boolean, onOpen: (Phone) -> Unit) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("quest", Context.MODE_PRIVATE) }
     val phones by finder.phones.collectAsStateWithLifecycle()
+    // Reconnect with no menus: the phone used last time, or the only phone around.
+    LaunchedEffect(phones, autoOpen) {
+        if (!autoOpen) return@LaunchedEffect
+        val last = prefs.getString("last", null)
+        (phones.firstOrNull { it.name == last } ?: phones.singleOrNull())?.let(onOpen)
+    }
     var address by remember { mutableStateOf(prefs.getString("address", "").orEmpty()) }
     var addressError by remember { mutableStateOf<String?>(null) }
 
@@ -298,6 +321,17 @@ private fun PhoneList(finder: PhoneFinder, onOpen: (Phone) -> Unit) {
                 "and that sharing is on.",
             color = Muted,
         )
+
+        Text("Pair a phone", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            QrCode(Pairing.pairingCode(context), 180.dp)
+            Spacer(Modifier.width(20.dp))
+            Text(
+                "In Pocket Portal on your phone, tap Scan headset code and point it here. " +
+                    "After that, this headset connects by itself whenever the phone is sharing, with no PIN.",
+                color = Muted, fontSize = 17.sp,
+            )
+        }
     }
 }
 
@@ -321,6 +355,7 @@ private fun Viewer(
     trustedFingerprint: String?,
     onTrust: (String) -> Unit,
     onClose: () -> Unit,
+    onConnected: () -> Unit,
     onWrongPin: () -> Unit,
 ) {
     BackHandler(onBack = onClose)
@@ -332,7 +367,8 @@ private fun Viewer(
     val trust by rememberUpdatedState(onTrust)
     val trusted by rememberUpdatedState(trustedFingerprint)
     // The viewer page calls this instead of showing its own PIN box when it runs in this app.
-    val bridge = remember { QuestBridge { wrongPin() } }
+    val connected by rememberUpdatedState(onConnected)
+    val bridge = remember { QuestBridge(onWrongPin = { wrongPin() }, onConnected = { connected() }) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -440,12 +476,18 @@ private fun Viewer(
 }
 
 /** Exposed to the viewer page as `window.PocketPortalApp`. */
-private class QuestBridge(private val onWrongPin: () -> Unit) {
+private class QuestBridge(private val onWrongPin: () -> Unit, private val onConnected: () -> Unit) {
     private val main = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
     fun wrongPin() {
         main.post(onWrongPin)
+    }
+
+    /** The phone accepted this headset; remembered so it reconnects by itself next time. */
+    @JavascriptInterface
+    fun connected() {
+        main.post(onConnected)
     }
 }
 

@@ -4,52 +4,56 @@ See and use your Android phone inside a Meta Quest 3. The phone app shares its s
 sound over Wi-Fi. On the Quest you use the Pocket Portal headset app, or open a web page in
 the Quest browser.
 
-- Picture: hardware H.264 at up to 60 fps, decoded by the headset (WebCodecs). Browsers
-  without WebCodecs get JPEG frames at up to 30 fps instead.
-- Sound: the phone's media and game audio, optional.
+- Picture: hardware H.265 (HEVC) at up to 120 fps, or H.264 when the headset can't decode
+  H.265, decoded by the headset (WebCodecs). The bitrate backs off by itself when the Wi-Fi
+  can't keep up. Browsers without WebCodecs get JPEG frames at up to 30 fps instead.
+- Stats: the viewer shows codec, frame rate, bitrate and latency (capture on the phone to
+  drawn in the headset) in the top-right corner; **⏱ Stats** hides it.
+- Sound: the phone's media and game audio in stereo, optional. Phone calls can't be
+  captured: Android blocks that for every app.
 - Control: tap, long-press, swipe, scroll (thumbstick), Back / Home / Recents /
-  Notifications / Quick settings, and typing into the focused text box.
-- Security: everything is encrypted (HTTPS and secure WebSocket on port 8443) with a
-  certificate the phone creates in its keystore. The headset app pins that certificate,
-  and the viewer also needs the 6-digit PIN shown on the phone. Port 8080 only redirects.
+  Notifications / Quick settings, and typing into the focused text box. Hand tracking
+  works too: pinch is a tap, pinch-and-hold a long press, pinch-and-drag a swipe.
+- Security: everything stays on your local network and is encrypted (HTTPS and secure
+  WebSocket on port 8443) with a certificate the phone creates in its keystore. The headset
+  app pins that certificate. A headset connects only if it's paired (its QR code scanned by
+  the phone) or knows the 6-digit PIN. Port 8080 only redirects.
+- Not supported: Netflix and other DRM apps block screen capture on purpose and show black.
 
 APKs: `..\PocketPortal-1.0.0-debug.apk` (phone) and `..\PocketPortal-Quest-1.0.0-debug.apk` (headset). Publishing to Google Play: see [PLAY_STORE.md](PLAY_STORE.md).
 Needs Android 11 or newer.
 
-## 1. Install on the phone (Samsung Galaxy)
+## 1. Install
 
-1. Copy `PocketPortal-1.0.0-debug.apk` to the phone (USB, Google Drive, Quick Share…)
-   and open it. If asked, allow your file manager or browser to install unknown apps.
-   - Or with USB debugging on: `adb install PocketPortal-1.0.0-debug.apk`
-2. Open **Pocket Portal**.
+1. Phone: copy `PocketPortal-1.0.0-debug.apk` to the phone and open it (allow installing
+   unknown apps if asked), or `adb install PocketPortal-1.0.0-debug.apk`.
+2. Quest: `adb install PocketPortal-Quest-1.0.0-debug.apk`. It appears under
+   **Library → Unknown sources**.
 
-## 2. Switch on remote touch (once)
+## 2. Set up once
 
-1. In Pocket Portal tap **Turn on remote touch**, then **Agree and continue**.
-2. Go to **Installed apps → Pocket Portal remote touch**, switch it **On**, then confirm.
-3. **If the switch is greyed out** ("Restricted setting"), Android is blocking a
-   sideloaded app. Go back to Pocket Portal, tap **Open App info**, tap **⋮** (top right),
-   choose **Allow restricted settings**, and then switch the service on again.
+1. **Pair the headset:** open Pocket Portal on the Quest; it shows a QR code. On the phone,
+   tap **Scan headset code** and point the phone at the code. No PIN is needed after that.
+2. **Remote touch:** on the phone tap **Turn on**, then **Agree and continue**, and in
+   Settings go to **Installed apps → Pocket Portal remote touch** and switch it **On**.
+   - **If the switch is greyed out** ("Restricted setting"), Android is blocking a
+     sideloaded app. In Pocket Portal open **More options → Open App info**, tap **⋮**,
+     choose **Allow restricted settings**, then switch the service on again.
+   - Without remote touch the headset can still watch, but it can't control the phone.
 
-Without this step the headset can still watch, but it can't control the phone.
+## 3. Connect
 
-## 3. Share the screen
+1. Phone and Quest on the **same Wi-Fi** (5 GHz or 6 GHz works best).
+2. On the phone tap **Connect**. Allow notifications and choose **Share entire screen**.
+3. The Quest app opens the phone's screen by itself. It reconnects by itself when the
+   headset wakes up, as long as the phone is still sharing.
 
-1. Phone and Quest on the **same Wi-Fi**.
-2. In Pocket Portal pick a quality (Balanced is fine), then tap **Start sharing**. Allow
-   notifications and choose **Share entire screen** (the only option).
-3. Note the address (e.g. `https://192.168.1.23:8443`) and the **PIN**.
+### Using the Quest browser instead
 
-## 4. Open it on the Quest 3
-
-1. Open the **Browser** app on the Quest and type the address from the phone. The browser
-   warns that the connection isn't private, because the phone signs its own certificate:
-   choose **Advanced → Proceed**. (The Pocket Portal headset app checks the certificate
-   itself and skips this.)
-   - Tip: add `#PIN` to skip the PIN prompt, e.g. `https://192.168.1.23:8443/#482913`,
-     then bookmark it. The address can change if your router hands out a new one.
-2. Enter the PIN. The phone screen appears. You can resize or curve the browser
-   window, or tap **Full screen**.
+Under **More options** the phone shows its address (e.g. `https://192.168.1.23:8443`) and
+the **PIN**. Type the address into the Quest **Browser**; it warns that the connection
+isn't private because the phone signs its own certificate, so choose **Advanced → Proceed**.
+Enter the PIN. Tip: add `#PIN` to the address to skip the prompt, then bookmark it.
 
 ## Phone screen while sharing
 

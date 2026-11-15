@@ -2,6 +2,7 @@ package app.pocketportal
 
 import android.Manifest
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
@@ -15,20 +16,33 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -39,8 +53,10 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,10 +69,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.delay
 
 private val Accent = Color(0xFF4FA3FF)
 private val Muted = Color(0xFFA9B4C0)
+private val Live = Color(0xFF4CD787)
+private val Warn = Color(0xFFFFB74D)
+private val Danger = Color(0xFFFF8A80)
+private val Panel = Color(0xFF1C232B)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,7 +96,7 @@ class MainActivity : ComponentActivity() {
                     onPrimary = Color.Black,
                     background = Color(0xFF101418),
                     surface = Color(0xFF101418),
-                    surfaceVariant = Color(0xFF1C232B),
+                    surfaceVariant = Panel,
                 ),
             ) {
                 Surface(Modifier.fillMaxSize()) { MirrorScreen() }
@@ -82,29 +105,29 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * One screen: a status line, one big Connect button, and the two things that
+ * might need doing once (pair the headset, switch on remote touch). Everything
+ * else is under "More options".
+ */
 @Composable
 private fun MirrorScreen() {
     val context = LocalContext.current
     val running by MirrorState.running.collectAsStateWithLifecycle()
     val viewers by MirrorState.viewers.collectAsStateWithLifecycle()
     val touch by MirrorState.touchEnabled.collectAsStateWithLifecycle()
-    val pin by MirrorState.pin.collectAsStateWithLifecycle()
-    val quality by MirrorState.quality.collectAsStateWithLifecycle()
+    val headsets by MirrorState.headsets.collectAsStateWithLifecycle()
     val sound by MirrorState.sound.collectAsStateWithLifecycle()
-    val screenMode by MirrorState.screenMode.collectAsStateWithLifecycle()
-    val paired by AdbBridge.paired.collectAsStateWithLifecycle()
-    val pairingStatus by AdbBridge.status.collectAsStateWithLifecycle()
     val error by MirrorState.error.collectAsStateWithLifecycle()
     var showDisclosure by remember { mutableStateOf(false) }
+    var showOptions by rememberSaveable { mutableStateOf(false) }
+    var pairMessage by remember { mutableStateOf<String?>(null) }
 
-    // The Wi-Fi address and the permissions below can change while the app is open
-    // (the user switches networks or comes back from Settings), so keep checking.
+    // The Wi-Fi address can change while the app is open, so keep checking.
     var address by remember { mutableStateOf(localIpAddress()) }
-    var canDim by remember { mutableStateOf(PhoneScreen.canDim(context)) }
     LaunchedEffect(Unit) {
         while (true) {
             address = localIpAddress()
-            canDim = PhoneScreen.canDim(context)
             delay(3000)
         }
     }
@@ -125,10 +148,6 @@ private fun MirrorScreen() {
         }
         capture.launch(intent)
     }
-    // The pairing code is typed into a notification, so ask for that permission first.
-    val setupNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        AdbBridge.startPairing(context)
-    }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result[Manifest.permission.ACCESS_LOCAL_NETWORK] == false) {
             MirrorState.error.value = "Pocket Portal needs the \"Nearby devices\" / local network permission, " +
@@ -140,13 +159,25 @@ private fun MirrorScreen() {
             requestCapture()
         }
     }
-    fun start() {
+    fun connect() {
         val needed = buildList {
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
             if (Build.VERSION.SDK_INT >= 37) add(Manifest.permission.ACCESS_LOCAL_NETWORK)
             if (sound) add(Manifest.permission.RECORD_AUDIO)
         }.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
         if (needed.isNotEmpty()) permissions.launch(needed.toTypedArray()) else requestCapture()
+    }
+    fun scanHeadset() {
+        val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+        GmsBarcodeScanning.getClient(context, options).startScan()
+            .addOnSuccessListener { barcode ->
+                val name = barcode.rawValue?.let { MirrorState.pairHeadset(context, it) }
+                pairMessage = if (name != null) "Paired with $name. It connects by itself from now on."
+                else "That isn't a Pocket Portal code. Scan the code shown in Pocket Portal on the headset."
+            }
+            .addOnFailureListener {
+                pairMessage = "The scanner couldn't start (${it.message}). You can use the PIN under More options instead."
+            }
     }
 
     Column(
@@ -155,146 +186,80 @@ private fun MirrorScreen() {
             .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         Text("Pocket Portal", fontSize = 30.sp, fontWeight = FontWeight.Bold)
-        Text("See and use this phone inside your VR headset over Wi-Fi.", color = Muted)
 
-        Step("1. Remote touch", if (touch) "On" else "Off", touch) {
-            Text(
-                if (touch) "The headset can tap, swipe and type on this phone."
-                else "Switch on \"Pocket Portal remote touch\" so the headset can control the phone. " +
-                    "Without it, the headset can only watch.",
-                color = Muted,
+        // ---- Status and the one big button -----------------------------------------------
+        val (statusColor, statusText) = when {
+            address == null -> Danger to "Connect this phone to the same Wi-Fi as your headset."
+            !running -> Muted to "Ready. Put on your headset, then tap Connect."
+            viewers > 0 -> Live to if (viewers == 1) "Connected to your headset" else "Connected to $viewers viewers"
+            else -> Warn to "Waiting for the headset… Open Pocket Portal on it."
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(12.dp).background(statusColor, CircleShape))
+            Spacer(Modifier.width(10.dp))
+            Text(statusText, color = if (statusColor == Muted) Muted else Color.White, fontSize = 17.sp)
+        }
+
+        if (running) {
+            OutlinedButton(
+                onClick = { MirrorService.stop(context) },
+                modifier = Modifier.fillMaxWidth().height(72.dp),
+                shape = RoundedCornerShape(20.dp),
+            ) { Text("Disconnect", fontSize = 22.sp) }
+        } else {
+            Button(
+                onClick = { connect() },
+                enabled = address != null,
+                modifier = Modifier.fillMaxWidth().height(72.dp),
+                shape = RoundedCornerShape(20.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Accent),
+            ) { Text("Connect", fontSize = 22.sp, fontWeight = FontWeight.SemiBold) }
+            Text("Android asks to share your screen: choose \"Entire screen\".", color = Muted, fontSize = 13.sp)
+        }
+        error?.let { Text(it, color = Danger) }
+
+        // ---- One-time setup, shown only while something is missing ------------------------
+        if (headsets.isEmpty()) {
+            SetupCard(
+                title = "Pair your headset",
+                body = "Open Pocket Portal on the Quest. It shows a code: scan it here once and the headset " +
+                    "connects by itself from then on, with no PIN.",
+                action = "Scan headset code",
+                onAction = ::scanHeadset,
             )
-            if (!touch) {
-                Button(onClick = { showDisclosure = true }) {
-                    Text("Turn on remote touch")
-                }
-                Text(
-                    "On Samsung: Accessibility → Installed apps → Pocket Portal remote touch. " +
-                        "If the switch is greyed out (\"Restricted setting\"), open App info, tap ⋮ " +
-                        "and choose \"Allow restricted settings\", then try again.",
-                    color = Muted, fontSize = 13.sp,
-                )
-                OutlinedButton(onClick = {
-                    context.startActivity(
-                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
-                    )
-                }) { Text("Open App info") }
-            }
+        }
+        if (!touch) {
+            SetupCard(
+                title = "Turn on remote touch",
+                body = "Lets you tap, swipe and type on this phone from the headset. Without it the headset can only watch.",
+                action = "Turn on",
+                onAction = { showDisclosure = true },
+            )
+        }
+        pairMessage?.let { Text(it, color = Accent) }
+        if (headsets.isNotEmpty() && touch) {
+            Text(
+                "Paired with ${headsets.values.joinToString()} · remote touch on",
+                color = Muted, fontSize = 13.sp,
+            )
         }
 
-        Step("2. Share screen", if (running) "Live" else "Stopped", running) {
-            Text("Picture quality", color = Muted)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Quality.entries.forEach { q ->
-                    FilterChip(
-                        selected = q == quality,
-                        enabled = !running,
-                        onClick = { MirrorState.setQuality(context, q) },
-                        label = { Text(q.label) },
-                    )
-                }
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Stream sound")
-                    Text(
-                        "Play this phone's media and game sound in the headset. Android asks for audio " +
-                            "permission once; the microphone isn't used.",
-                        color = Muted, fontSize = 13.sp,
-                    )
-                }
-                Switch(
-                    checked = sound,
-                    enabled = !running,
-                    onCheckedChange = { MirrorState.setSound(context, it) },
-                )
-            }
-            Text("Phone screen while sharing", color = Muted)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ScreenMode.entries.forEach { m ->
-                    FilterChip(
-                        selected = m == screenMode,
-                        enabled = !running,
-                        onClick = { MirrorState.setScreenMode(context, m) },
-                        label = { Text(m.label) },
-                    )
-                }
-            }
-            if (screenMode == ScreenMode.Off) {
-                if (paired) {
-                    Text(
-                        "The phone's screen turns off while sharing; the headset still shows everything. " +
-                            "Press the power button twice to see the phone's screen again.",
-                        color = Muted, fontSize = 13.sp,
-                    )
-                } else {
-                    Text(
-                        "Switching the screen off needs a one-time setup through Wireless debugging " +
-                            "(in Developer options). After that it works on its own, even after a restart. " +
-                            "Until then the screen dims instead.",
-                        color = Muted, fontSize = 13.sp,
-                    )
-                    OutlinedButton(onClick = {
-                        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-                            PackageManager.PERMISSION_GRANTED
-                        if (Build.VERSION.SDK_INT >= 33 && !granted) setupNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        else AdbBridge.startPairing(context)
-                    }) { Text("Set up screen-off") }
-                }
-                pairingStatus?.takeIf { !paired || it.startsWith("Screen-off") }?.let {
-                    Text(it, color = Accent, fontSize = 13.sp)
-                }
-            }
-            val needsDim = screenMode == ScreenMode.Dim || (screenMode == ScreenMode.Off && !paired)
-            if (needsDim && !canDim) {
-                Text("To dim the screen, allow Pocket Portal to change the brightness.", color = Muted, fontSize = 13.sp)
-                OutlinedButton(onClick = {
-                    context.startActivity(
-                        Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:${context.packageName}"))
-                    )
-                }) { Text("Allow brightness control") }
-            }
-            if (running) {
-                OutlinedButton(onClick = { MirrorService.stop(context) }) { Text("Stop sharing") }
-            } else {
-                Button(onClick = { start() }, enabled = address != null) { Text("Start sharing") }
-                Text("When Android asks, choose to share the entire screen.", color = Muted, fontSize = 13.sp)
-            }
-            error?.let { Text(it, color = Color(0xFFFF8A80)) }
+        // ---- Everything else ---------------------------------------------------------------
+        HorizontalDivider(color = Color(0xFF26303B))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { showOptions = !showOptions }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("More options", Modifier.weight(1f), fontSize = 17.sp)
+            Text(if (showOptions) "▴" else "▾", color = Muted, fontSize = 17.sp)
         }
-
-        Step("3. Open in the headset", if (viewers > 0) "$viewers connected" else "", viewers > 0) {
-            if (address == null) {
-                Text("Connect this phone to the same Wi-Fi as your headset.", color = Color(0xFFFF8A80))
-            } else {
-                Text("Open Pocket Portal on the headset and pick this phone, or go to this address in the headset's browser:", color = Muted)
-                Text(
-                    "https://$address:${MirrorState.PORT}",
-                    fontSize = 20.sp, fontFamily = FontFamily.Monospace, color = Accent,
-                )
-                Text(
-                    "The browser warns that the connection isn't private because the phone signs its own " +
-                        "certificate. Choose Advanced → Proceed. The Pocket Portal headset app checks the " +
-                        "certificate for you and skips this.",
-                    color = Muted, fontSize = 13.sp,
-                )
-                Text("PIN", color = Muted)
-                Text(pin, fontSize = 32.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                OutlinedButton(onClick = { MirrorState.regeneratePin(context) }, enabled = !running) {
-                    Text("New PIN")
-                }
-                val fingerprint = remember(running) { CertStore.fingerprint() }
-                fingerprint?.let {
-                    Text(
-                        "Security code: " + it.take(16).chunked(4).joinToString(" "),
-                        color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
-        }
+        if (showOptions) MoreOptions(address, running, onScan = ::scanHeadset)
 
         val privacyUrl = stringResource(R.string.privacy_policy_url)
         if (privacyUrl.isNotBlank()) {
@@ -308,17 +273,187 @@ private fun MirrorScreen() {
         AccessibilityDisclosure(
             onAccept = {
                 showDisclosure = false
-                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                openTouchSettings(context)
             },
             onDecline = { showDisclosure = false },
         )
     }
 }
 
+/** Opens Accessibility settings with Pocket Portal's switch highlighted where the phone supports it. */
+private fun openTouchSettings(context: android.content.Context) {
+    val component = ComponentName(context, TouchService::class.java).flattenToString()
+    val args = Bundle().apply { putString(":settings:fragment_args_key", component) }
+    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        .putExtra(":settings:fragment_args_key", component)
+        .putExtra(":settings:show_fragment_args", args)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    context.startActivity(intent)
+}
+
+@Composable
+private fun SetupCard(title: String, body: String, action: String, onAction: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Text(body, color = Muted)
+            Button(onClick = onAction) { Text(action) }
+        }
+    }
+}
+
+@Composable
+private fun MoreOptions(address: String?, running: Boolean, onScan: () -> Unit) {
+    val context = LocalContext.current
+    val quality by MirrorState.quality.collectAsStateWithLifecycle()
+    val sound by MirrorState.sound.collectAsStateWithLifecycle()
+    val screenMode by MirrorState.screenMode.collectAsStateWithLifecycle()
+    val pin by MirrorState.pin.collectAsStateWithLifecycle()
+    val headsets by MirrorState.headsets.collectAsStateWithLifecycle()
+    val paired by AdbBridge.paired.collectAsStateWithLifecycle()
+    val pairingStatus by AdbBridge.status.collectAsStateWithLifecycle()
+    var canDim by remember { mutableStateOf(PhoneScreen.canDim(context)) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            canDim = PhoneScreen.canDim(context)
+            delay(3000)
+        }
+    }
+    // The pairing code is typed into a notification, so ask for that permission first.
+    val setupNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        AdbBridge.startPairing(context)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (running) Text("Stop sharing to change these.", color = Muted, fontSize = 13.sp)
+
+        Text("Picture quality", color = Muted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Quality.entries.forEach { q ->
+                FilterChip(
+                    selected = q == quality,
+                    enabled = !running,
+                    onClick = { MirrorState.setQuality(context, q) },
+                    label = { Text(q.label) },
+                )
+            }
+        }
+        Text(
+            "Uses H.265 when the headset supports it, otherwise H.264, at up to " +
+                "${quality.videoFps} fps. Quality drops by itself if the Wi-Fi can't keep up.",
+            color = Muted, fontSize = 13.sp,
+        )
+
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Stream sound")
+                Text(
+                    "Play this phone's media and game sound in the headset, in stereo. Android asks for audio " +
+                        "permission once; the microphone isn't used. Phone calls can't be streamed.",
+                    color = Muted, fontSize = 13.sp,
+                )
+            }
+            Switch(checked = sound, enabled = !running, onCheckedChange = { MirrorState.setSound(context, it) })
+        }
+
+        Text("Phone screen while sharing", color = Muted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ScreenMode.entries.forEach { m ->
+                FilterChip(
+                    selected = m == screenMode,
+                    enabled = !running,
+                    onClick = { MirrorState.setScreenMode(context, m) },
+                    label = { Text(m.label) },
+                )
+            }
+        }
+        if (screenMode == ScreenMode.Off) {
+            if (paired) {
+                Text(
+                    "The phone's screen turns off while sharing; the headset still shows everything. " +
+                        "Press the power button twice to see the phone's screen again.",
+                    color = Muted, fontSize = 13.sp,
+                )
+            } else {
+                Text(
+                    "Switching the screen off needs a one-time setup through Wireless debugging " +
+                        "(in Developer options). After that it works on its own, even after a restart. " +
+                        "Until then the screen dims instead.",
+                    color = Muted, fontSize = 13.sp,
+                )
+                OutlinedButton(onClick = {
+                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                        PackageManager.PERMISSION_GRANTED
+                    if (Build.VERSION.SDK_INT >= 33 && !granted) setupNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    else AdbBridge.startPairing(context)
+                }) { Text("Set up screen-off") }
+            }
+            pairingStatus?.takeIf { !paired || it.startsWith("Screen-off") }?.let {
+                Text(it, color = Accent, fontSize = 13.sp)
+            }
+        }
+        val needsDim = screenMode == ScreenMode.Dim || (screenMode == ScreenMode.Off && !paired)
+        if (needsDim && !canDim) {
+            Text("To dim the screen, allow Pocket Portal to change the brightness.", color = Muted, fontSize = 13.sp)
+            OutlinedButton(onClick = {
+                context.startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:${context.packageName}")))
+            }) { Text("Allow brightness control") }
+        }
+
+        HorizontalDivider(color = Color(0xFF26303B))
+        Text("Paired headsets", color = Muted)
+        Text(if (headsets.isEmpty()) "None yet." else headsets.values.joinToString(), fontSize = 15.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onScan) { Text(if (headsets.isEmpty()) "Scan headset code" else "Pair another") }
+            if (headsets.isNotEmpty()) TextButton(onClick = { MirrorState.forgetHeadsets(context) }) { Text("Forget all") }
+        }
+
+        HorizontalDivider(color = Color(0xFF26303B))
+        Text("Use a web browser instead", color = Muted)
+        if (address != null) {
+            Text(
+                "In the headset's browser, go to this address and enter the PIN. The browser warns that the " +
+                    "connection isn't private because the phone signs its own certificate: choose Advanced → Proceed.",
+                color = Muted, fontSize = 13.sp,
+            )
+            Text("https://$address:${MirrorState.PORT}", fontSize = 18.sp, fontFamily = FontFamily.Monospace, color = Accent)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("PIN  ", color = Muted)
+            Text(pin, fontSize = 26.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(12.dp))
+            TextButton(onClick = { MirrorState.regeneratePin(context) }, enabled = !running) { Text("New PIN") }
+        }
+        val fingerprint = remember(running) { CertStore.fingerprint() }
+        fingerprint?.let {
+            Text(
+                "Security code: " + it.take(16).chunked(4).joinToString(" "),
+                color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace,
+            )
+        }
+
+        HorizontalDivider(color = Color(0xFF26303B))
+        Text("Remote touch switch greyed out?", color = Muted)
+        Text(
+            "Android blocks it for apps installed outside the Play Store. Open App info, tap ⋮, choose " +
+                "\"Allow restricted settings\", then turn remote touch on again.",
+            color = Muted, fontSize = 13.sp,
+        )
+        OutlinedButton(onClick = {
+            context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
+        }) { Text("Open App info") }
+    }
+}
+
 /**
  * Google Play requires this prominent disclosure, with an explicit choice,
  * before an app that isn't an accessibility tool sends the user to switch on
- * its accessibility service.
+ * its accessibility service. It also shows, as a short looping animation, the
+ * three taps the user is about to make in Settings.
  */
 @Composable
 private fun AccessibilityDisclosure(onAccept: () -> Unit, onDecline: () -> Unit) {
@@ -326,23 +461,20 @@ private fun AccessibilityDisclosure(onAccept: () -> Unit, onDecline: () -> Unit)
         onDismissRequest = onDecline,
         title = { Text("Allow remote touch?") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
                     "Pocket Portal uses Android's Accessibility Service API so you can control this phone " +
-                        "from your VR headset."
+                        "from your VR headset. When it's on, Pocket Portal will:"
                 )
-                Text("When it's on, Pocket Portal will:")
-                Text("• Perform the taps, swipes and Back / Home / Recents presses you make in the headset viewer.")
+                Text("• Perform the taps, swipes and Back / Home / Recents presses you make in the headset.")
                 Text("• Read the text box you're typing into, only so it can add the text you type in the headset.")
                 Text(
                     "It doesn't collect, store or share this information. Your screen and input travel only " +
-                        "between this phone and your own headset on your Wi-Fi, protected by the PIN. " +
-                        "You can switch remote touch off at any time in Accessibility settings."
+                        "between this phone and your own headset on your local network. You can switch remote " +
+                        "touch off at any time in Accessibility settings."
                 )
-                Text(
-                    "Next, Android opens Accessibility settings. Choose Pocket Portal remote touch and switch it on.",
-                    color = Muted,
-                )
+                Text("Next, in Settings:", color = Muted)
+                SettingsWalkthrough()
             }
         },
         confirmButton = { Button(onClick = onAccept) { Text("Agree and continue") } },
@@ -350,18 +482,35 @@ private fun AccessibilityDisclosure(onAccept: () -> Unit, onDecline: () -> Unit)
     )
 }
 
+/** The three taps in Accessibility settings, lighting up one after another on a loop. */
 @Composable
-private fun Step(title: String, status: String, active: Boolean, content: @Composable () -> Unit) {
-    Card(
-        Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                Text(status, color = if (active) Accent else Muted)
+private fun SettingsWalkthrough() {
+    val steps = listOf("Installed apps", "Pocket Portal remote touch", "Switch on  ●")
+    var current by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1100)
+            current = (current + 1) % (steps.size + 1) // a beat of rest after the last step
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        steps.forEachIndexed { i, label ->
+            val lit = i == current
+            val border by animateColorAsState(if (lit) Accent else Color(0xFF26303B), label = "step")
+            val text by animateColorAsState(if (lit) Color.White else Muted, label = "stepText")
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .border(1.5.dp, border, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("${i + 1}", color = border, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(12.dp))
+                Text(label, color = text)
+                Spacer(Modifier.weight(1f))
+                if (lit) Text("tap", color = Accent, fontSize = 13.sp)
             }
-            content()
         }
     }
 }

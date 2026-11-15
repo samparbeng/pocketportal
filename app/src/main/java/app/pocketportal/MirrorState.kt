@@ -2,6 +2,9 @@ package app.pocketportal
 
 import android.content.Context
 import android.hardware.display.DisplayManager
+import android.net.Uri
+import org.json.JSONObject
+import java.security.MessageDigest
 import android.util.DisplayMetrics
 import android.view.Display
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,7 +13,10 @@ import java.net.NetworkInterface
 import java.security.SecureRandom
 
 /** How hard the phone works to encode frames, traded against Wi-Fi bandwidth. */
-// fps and jpegQuality apply to the JPEG fallback; bitrate and videoFps to H.264.
+// fps and jpegQuality apply to the JPEG fallback; bitrate and videoFps to H.265/H.264.
+// bitrate is the ceiling: the stream backs off below it when Wi-Fi can't keep up.
+// 120 fps matches the Quest 3's fastest refresh; the phone only sends frames when
+// its screen changes, so a still screen costs nothing.
 enum class Quality(
     val label: String,
     val maxDimension: Int,
@@ -19,9 +25,9 @@ enum class Quality(
     val bitrate: Int,
     val videoFps: Int,
 ) {
-    Sharp("Sharp", 1920, 80, 30, 10_000_000, 60),
-    Balanced("Balanced", 1440, 70, 30, 6_000_000, 60),
-    Fast("Fast", 1024, 60, 30, 3_000_000, 30),
+    Sharp("Sharp", 1920, 80, 30, 16_000_000, 120),
+    Balanced("Balanced", 1440, 70, 30, 10_000_000, 120),
+    Fast("Fast", 1024, 60, 30, 4_000_000, 60),
 }
 
 /** Process-wide state shared by the UI, the capture service and the touch service. */
@@ -43,6 +49,11 @@ object MirrorState {
     val sound = MutableStateFlow(true)
     /** What the phone's own screen does while sharing. */
     val screenMode = MutableStateFlow(ScreenMode.Normal)
+    /**
+     * Headsets paired by scanning the QR code they show: secret key → headset name.
+     * A paired headset connects with its key instead of the PIN.
+     */
+    val headsets = MutableStateFlow<Map<String, String>>(emptyMap())
 
     private var loaded = false
 
@@ -50,6 +61,10 @@ object MirrorState {
         if (loaded) return
         loaded = true
         val prefs = prefs(context)
+        headsets.value = runCatching {
+            val json = JSONObject(prefs.getString("headsets", "{}")!!)
+            json.keys().asSequence().associateWith { json.getString(it) }
+        }.getOrDefault(emptyMap())
         pin.value = prefs.getString("pin", null) ?: newPin().also { prefs.edit().putString("pin", it).apply() }
         quality.value = runCatching { Quality.valueOf(prefs.getString("quality", "")!!) }.getOrDefault(Quality.Balanced)
         sound.value = prefs.getBoolean("sound", true)
@@ -74,6 +89,36 @@ object MirrorState {
     fun setSound(context: Context, value: Boolean) {
         sound.value = value
         prefs(context).edit().putBoolean("sound", value).apply()
+    }
+
+    /**
+     * Reads a headset's pairing code, `pocketportal://pair?t=<key>&n=<name>`, and
+     * remembers it. Returns the headset's name, or null if it isn't a Pocket Portal code.
+     */
+    fun pairHeadset(context: Context, code: String): String? {
+        val uri = runCatching { Uri.parse(code.trim()) }.getOrNull() ?: return null
+        if (uri.scheme != "pocketportal" || uri.host != "pair") return null
+        val key = uri.getQueryParameter("t")?.takeIf { it.matches(Regex("[0-9a-f]{32}")) } ?: return null
+        val name = uri.getQueryParameter("n")?.take(40)?.ifBlank { null } ?: "Headset"
+        // One entry per headset name, so re-pairing replaces the old key.
+        val updated = headsets.value.filterValues { it != name } + (key to name)
+        saveHeadsets(context, updated)
+        return name
+    }
+
+    fun forgetHeadsets(context: Context) = saveHeadsets(context, emptyMap())
+
+    private fun saveHeadsets(context: Context, value: Map<String, String>) {
+        headsets.value = value
+        prefs(context).edit().putString("headsets", JSONObject(value).toString()).apply()
+    }
+
+    /** True for the PIN or a paired headset's key; compared in constant time. */
+    fun isAuthorized(key: String): Boolean {
+        val given = key.toByteArray()
+        var ok = MessageDigest.isEqual(given, pin.value.toByteArray())
+        headsets.value.keys.forEach { ok = MessageDigest.isEqual(given, it.toByteArray()) || ok }
+        return ok
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences("pocketportal", Context.MODE_PRIVATE)
