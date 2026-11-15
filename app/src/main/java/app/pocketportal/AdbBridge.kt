@@ -92,14 +92,47 @@ object AdbBridge {
      */
     fun startPairing(context: Context) {
         val app = context.applicationContext
+        // If Wireless debugging already trusts this app (paired earlier), no code is needed.
+        if (Settings.Global.getInt(app.contentResolver, "adb_wifi_enabled", 0) == 1 || canWriteSecureSettings(app)) {
+            status.value = "Connecting…"
+            worker.execute {
+                if (finishSetup(app)) return@execute
+                main.post { askForCode(app) }
+            }
+            return
+        }
+        askForCode(app)
+    }
+
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /**
+     * Connects, grants WRITE_SECURE_SETTINGS (so Wireless debugging can be switched back
+     * on after a restart) and records that screen-off works. Runs on the worker thread.
+     */
+    private fun finishSetup(app: Context): Boolean {
+        if (!connect(app)) return false
+        val result = shell(app, "pm grant ${app.packageName} ${Manifest.permission.WRITE_SECURE_SETTINGS}")
+        Log.i(TAG, "grant: ${result.trim().ifEmpty { "ok" }}")
+        prefs(app).edit().putBoolean("paired", true).apply()
+        pairingMdns?.stop()
+        pairingMdns = null
+        paired.value = true
+        status.value = "Screen-off is set up."
+        notifyDone(app, "Screen-off is set up. You can close Wireless debugging.")
+        return true
+    }
+
+    private fun askForCode(app: Context) {
         status.value = "In Wireless debugging, tap \"Pair device with pairing code\", then type the code in the notification."
         pairingPort = -1
         pairingMdns?.stop()
+        // Each time the pairing dialog opens it advertises a new port, and the old one
+        // closes; a port of 0 or less means the advertisement went away.
         pairingMdns = AdbMdns(app, AdbMdns.SERVICE_TYPE_TLS_PAIRING) { host, port ->
-            if (port > 0) {
-                pairingHost = host
-                pairingPort = port
-            }
+            pairingHost = host
+            pairingPort = port
+            Log.i(TAG, "pairing port ${if (port > 0) "advertised: $port" else "gone"}")
         }.also { it.start() }
         notifyPairing(app, "Type the 6-digit pairing code shown in Wireless debugging.")
         openWirelessDebugging(app)
@@ -122,20 +155,30 @@ object AdbBridge {
                     if (pairingPort > 0) break
                     Thread.sleep(100)
                 }
-                if (pairingPort <= 0) error("pairing port not found; keep the pairing dialog open")
-                val host = pairingHost?.hostAddress ?: "127.0.0.1"
+                if (pairingPort <= 0) error("the pairing dialog isn't open; keep it on screen while you type the code")
                 status.value = "Pairing…"
-                if (!manager(app).pair(host, pairingPort, code)) error("wrong code")
+                // adbd listens on the phone itself, so try the loopback address first (as Shizuku
+                // does), then the Wi-Fi address it advertised.
+                val hosts = listOfNotNull("127.0.0.1", pairingHost?.hostAddress).distinct()
+                var lastError: Exception? = null
+                var ok = false
+                for (host in hosts) {
+                    try {
+                        ok = manager(app).pair(host, pairingPort, code)
+                        Log.i(TAG, "pair via $host:$pairingPort -> $ok")
+                        lastError = null
+                        break
+                    } catch (e: Exception) {
+                        Log.w(TAG, "pair via $host:$pairingPort failed: ${e.message}")
+                        lastError = e
+                    }
+                }
+                lastError?.let { throw it }
+                if (!ok) error("wrong code")
                 pairingMdns?.stop()
                 pairingMdns = null
                 status.value = "Paired. Connecting…"
-                if (!connect(app)) error("paired, but couldn't connect")
-                // Lets the app switch Wireless debugging back on after a restart.
-                shell(app, "pm grant ${app.packageName} ${Manifest.permission.WRITE_SECURE_SETTINGS}")
-                prefs(app).edit().putBoolean("paired", true).apply()
-                paired.value = true
-                status.value = "Screen-off is set up."
-                notifyDone(app, "Screen-off is set up. You can close Wireless debugging.")
+                if (!finishSetup(app)) error("paired, but couldn't connect")
             } catch (e: Exception) {
                 Log.w(TAG, "pairing failed", e)
                 status.value = "Pairing failed: ${e.message}. Try again with a new code."
@@ -162,6 +205,70 @@ object AdbBridge {
         }
     }
 
+    // ---- Touch input through the shell ---------------------------------------------------
+
+    /** [InputInjector] is running, so headset touches can go through it. */
+    val injectorReady = MutableStateFlow(false)
+    @Volatile private var injector: io.github.muntashirakon.adb.AdbStream? = null
+    @Volatile private var injectorOut: java.io.OutputStream? = null
+    // Writes go on their own thread so a slow panel switch never delays a tap.
+    private val input = Executors.newSingleThreadExecutor { Thread(it, "pocketportal-input") }
+
+    /** Starts [InputInjector] for this sharing session, if screen-off (the ADB connection) is set up. */
+    fun startInjector(context: Context) {
+        if (!paired.value) return
+        val app = context.applicationContext
+        worker.execute {
+            runCatching {
+                if (injector != null || !connect(app)) return@runCatching
+                val apk = app.applicationInfo.sourceDir
+                val stream = manager(app).openStream("shell:CLASSPATH=$apk app_process / ${InputInjector::class.java.name}")
+                // Wait for it to say it's ready (or that it failed).
+                val reply = StringBuilder()
+                val source = stream.openInputStream()
+                val buffer = ByteArray(256)
+                val deadline = System.currentTimeMillis() + 5000
+                while (System.currentTimeMillis() < deadline && "ready" !in reply && "failed" !in reply) {
+                    val n = try { source.read(buffer) } catch (e: java.io.IOException) { -1 }
+                    if (n < 0) break
+                    reply.append(String(buffer, 0, n))
+                }
+                if ("ready" !in reply) {
+                    Log.w(TAG, "input injector didn't start: $reply")
+                    runCatching { stream.close() }
+                    return@runCatching
+                }
+                injector = stream
+                injectorOut = stream.openOutputStream()
+                injectorReady.value = true
+                Log.i(TAG, "input injector ready")
+            }.onFailure { Log.w(TAG, "input injector failed", it) }
+        }
+    }
+
+    fun stopInjector() {
+        injectorReady.value = false
+        val stream = injector
+        injector = null
+        injectorOut = null
+        if (stream != null) input.execute { runCatching { stream.close() } }
+    }
+
+    /** Sends one [InputInjector] command; false if it isn't running. */
+    fun sendInput(line: String): Boolean {
+        val out = injectorOut ?: return false
+        input.execute {
+            try {
+                out.write("$line\n".toByteArray())
+                out.flush()
+            } catch (e: Exception) {
+                Log.w(TAG, "input injector gone", e)
+                if (injectorOut === out) stopInjector()
+            }
+        }
+        return true
+    }
+
     // ---- Connection ----------------------------------------------------------------------
 
     private fun canWriteSecureSettings(context: Context) =
@@ -182,9 +289,30 @@ object AdbBridge {
             .getOrDefault(false)
     }
 
+    /**
+     * Runs a shell command and returns its output. libadb signals the normal end of
+     * the output by throwing "Stream closed" instead of returning -1, so that ends
+     * the read rather than failing it.
+     */
     private fun shell(context: Context, command: String): String {
         val stream = manager(context).openStream("shell:$command")
-        return stream.openInputStream().use { it.readBytes().toString(Charsets.UTF_8) }.also { stream.close() }
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(4096)
+        try {
+            val input = stream.openInputStream()
+            while (true) {
+                val n = try {
+                    input.read(buffer)
+                } catch (e: java.io.IOException) {
+                    if (stream.isClosed) -1 else throw e
+                }
+                if (n < 0) break
+                out.write(buffer, 0, n)
+            }
+        } finally {
+            runCatching { stream.close() }
+        }
+        return out.toString(Charsets.UTF_8.name())
     }
 
     @Synchronized

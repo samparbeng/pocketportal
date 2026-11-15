@@ -186,7 +186,7 @@ class MirrorService : Service() {
                 sendHello()
                 handler.post { onViewerJoined(client) }
             },
-            onMessage = { text -> TouchService.instance?.handle(JSONObject(text)) },
+            onMessage = { text -> handleInput(JSONObject(text)) },
             onViewersChanged = {
                 MirrorState.viewers.value = it
                 handler.post { chooseMode() }
@@ -231,6 +231,10 @@ class MirrorService : Service() {
 
         // Tell open viewers when remote touch is switched on or off on the phone.
         scope.launch { MirrorState.touchEnabled.drop(1).collect { sendHello() } }
+        scope.launch { AdbBridge.injectorReady.drop(1).collect { sendHello() } }
+        // With screen-off set up, touches go in through the shell, which also reaches
+        // screens that ignore remote touch (Google sign-in, permission dialogs).
+        AdbBridge.startInjector(this)
 
         // Sharing stops if the phone sleeps, and with its panel switched off nobody can
         // see it time out, so stay awake until sharing ends.
@@ -246,11 +250,45 @@ class MirrorService : Service() {
         }
     }
 
+    /**
+     * A tap, swipe, key or text from the headset. Touches and keys go through the
+     * shell input injector when it runs; text, and everything when it doesn't, through
+     * the remote-touch accessibility service.
+     */
+    private fun handleInput(m: JSONObject) {
+        val metrics = realScreenMetrics(this)
+        fun px(x: Double, y: Double) = "%.1f %.1f".format(
+            java.util.Locale.US,
+            x.coerceIn(0.0, 1.0) * (metrics.widthPixels - 1),
+            y.coerceIn(0.0, 1.0) * (metrics.heightPixels - 1),
+        )
+        val line = when (m.optString("t")) {
+            "tap" -> "tap ${px(m.getDouble("x"), m.getDouble("y"))}"
+            "press" -> "press ${px(m.getDouble("x"), m.getDouble("y"))} ${m.optLong("ms", 700).coerceIn(1, 10_000)}"
+            "swipe" -> {
+                val pts = m.getJSONArray("pts")
+                val coords = (0 until pts.length()).joinToString(" ") { i -> pts.getJSONArray(i).let { px(it.getDouble(0), it.getDouble(1)) } }
+                "swipe ${m.optLong("ms", 300).coerceIn(1, 10_000)} $coords"
+            }
+            // Keys only when remote touch is off: its global actions also cover Quick settings.
+            "key" -> if (TouchService.instance != null) null else when (m.optString("k")) {
+                "back" -> "key 4"
+                "home" -> "key 3"
+                "recents" -> "key 187"
+                "notifications" -> "key 83"
+                else -> null
+            }
+            else -> null
+        }
+        if (line != null && AdbBridge.sendInput(line)) return
+        TouchService.instance?.handle(m)
+    }
+
     private fun sendHello() {
         server?.broadcastText(
             JSONObject()
                 .put("type", "hello")
-                .put("input", TouchService.instance != null)
+                .put("input", TouchService.instance != null || AdbBridge.injectorReady.value)
                 .put("audio", audio != null)
                 .put("rate", AudioStreamer.SAMPLE_RATE)
                 .toString()
@@ -452,6 +490,7 @@ class MirrorService : Service() {
         scope.cancel()
         if (advertising) runCatching { getSystemService(NsdManager::class.java).unregisterService(nsdListener) }
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
+        AdbBridge.stopInjector()
         PhoneScreen.restore(this)
         wakeLock?.takeIf { it.isHeld }?.release()
         audio?.stop()
