@@ -59,15 +59,19 @@ In Pocket Portal, under **Phone screen while sharing**:
 - **Dim:** brightness drops to the minimum while sharing and comes back when you stop.
   Needs **Allow brightness control** once.
 - **Off:** the phone's panel switches off completely while the headset keeps showing
-  everything (like scrcpy). Needs the free **Shizuku** app (by Rikka) from the Play Store:
-  1. Install Shizuku and open it once.
-  2. Start it: in Shizuku, use **Start via Wireless debugging**, or plug the phone into a PC and run
-     `adb shell /data/app/.../moe.shizuku.privileged.api-.../lib/arm64/libshizuku.so`
-     (Shizuku's "Start via computer" screen shows the exact command).
-  3. In Pocket Portal choose **Off**, tap **Allow in Shizuku** and allow it.
+  everything (like scrcpy). Needs a one-time setup through the phone's own Wireless
+  debugging, with no PC and no other app:
+  1. Turn on **Developer options** (Settings → About phone → Software information → tap
+     **Build number** seven times).
+  2. In Pocket Portal choose **Off**, tap **Set up screen-off** and allow notifications.
+     Wireless debugging opens; switch it on if it's off.
+  3. Tap **Pair device with pairing code**. Leave that code on screen, pull down the
+     notification shade and type the code into the **Set up screen-off** notification.
+  4. "Screen-off is set up" appears. You can close Wireless debugging.
 
-  Shizuku stops when the phone restarts; start it again the same way. Until it's running,
-  "Off" falls back to dimming. Press the power button twice to see the phone's screen again.
+  It keeps working after a restart: Pocket Portal switches Wireless debugging back on by
+  itself when it needs it. If it can't switch the screen off, it dims it instead. Press the
+  power button twice to see the phone's screen again.
 
 The phone stays awake while sharing, so the screen timeout can't end the session.
 

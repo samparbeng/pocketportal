@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MirrorState.init(this)
-        PhoneScreen.watchShizuku()
+        AdbBridge.init(this)
         // If a previous session was killed while dimmed, give the user their brightness back.
         if (!MirrorState.running.value) PhoneScreen.undim(this)
         enableEdgeToEdge()
@@ -92,8 +92,8 @@ private fun MirrorScreen() {
     val quality by MirrorState.quality.collectAsStateWithLifecycle()
     val sound by MirrorState.sound.collectAsStateWithLifecycle()
     val screenMode by MirrorState.screenMode.collectAsStateWithLifecycle()
-    val shizukuReady by PhoneScreen.shizukuReady.collectAsStateWithLifecycle()
-    val shizukuNeedsPermission by PhoneScreen.shizukuNeedsPermission.collectAsStateWithLifecycle()
+    val paired by AdbBridge.paired.collectAsStateWithLifecycle()
+    val pairingStatus by AdbBridge.status.collectAsStateWithLifecycle()
     val error by MirrorState.error.collectAsStateWithLifecycle()
     var showDisclosure by remember { mutableStateOf(false) }
 
@@ -105,7 +105,6 @@ private fun MirrorScreen() {
         while (true) {
             address = localIpAddress()
             canDim = PhoneScreen.canDim(context)
-            PhoneScreen.refresh()
             delay(3000)
         }
     }
@@ -125,6 +124,10 @@ private fun MirrorScreen() {
             manager.createScreenCaptureIntent()
         }
         capture.launch(intent)
+    }
+    // The pairing code is typed into a notification, so ask for that permission first.
+    val setupNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        AdbBridge.startPairing(context)
     }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result[Manifest.permission.ACCESS_LOCAL_NETWORK] == false) {
@@ -221,31 +224,31 @@ private fun MirrorScreen() {
                 }
             }
             if (screenMode == ScreenMode.Off) {
-                when {
-                    shizukuReady -> Text(
+                if (paired) {
+                    Text(
                         "The phone's screen turns off while sharing; the headset still shows everything. " +
                             "Press the power button twice to see the phone's screen again.",
                         color = Muted, fontSize = 13.sp,
                     )
-                    shizukuNeedsPermission -> {
-                        Text("Shizuku is running. Allow Pocket Portal in it to switch the screen off.", color = Muted, fontSize = 13.sp)
-                        OutlinedButton(onClick = { PhoneScreen.requestShizukuPermission() }) { Text("Allow in Shizuku") }
-                    }
-                    else -> {
-                        Text(
-                            "Switching the screen off needs the free Shizuku app, started once with Wireless " +
-                                "debugging (and again after the phone restarts). Until then the screen dims instead.",
-                            color = Muted, fontSize = 13.sp,
-                        )
-                        OutlinedButton(onClick = {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api"))
-                            )
-                        }) { Text("Get Shizuku") }
-                    }
+                } else {
+                    Text(
+                        "Switching the screen off needs a one-time setup through Wireless debugging " +
+                            "(in Developer options). After that it works on its own, even after a restart. " +
+                            "Until then the screen dims instead.",
+                        color = Muted, fontSize = 13.sp,
+                    )
+                    OutlinedButton(onClick = {
+                        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                            PackageManager.PERMISSION_GRANTED
+                        if (Build.VERSION.SDK_INT >= 33 && !granted) setupNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        else AdbBridge.startPairing(context)
+                    }) { Text("Set up screen-off") }
+                }
+                pairingStatus?.takeIf { !paired || it.startsWith("Screen-off") }?.let {
+                    Text(it, color = Accent, fontSize = 13.sp)
                 }
             }
-            val needsDim = screenMode == ScreenMode.Dim || (screenMode == ScreenMode.Off && !shizukuReady)
+            val needsDim = screenMode == ScreenMode.Dim || (screenMode == ScreenMode.Off && !paired)
             if (needsDim && !canDim) {
                 Text("To dim the screen, allow Pocket Portal to change the brightness.", color = Muted, fontSize = 13.sp)
                 OutlinedButton(onClick = {

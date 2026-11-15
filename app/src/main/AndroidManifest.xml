@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -14,6 +15,11 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- "Dim while sharing": lowers brightness, then puts the user's setting back. -->
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <!-- Not grantable from the app: Pocket Portal grants it to itself over the phone's own
+         Wireless debugging during screen-off setup, so it can turn Wireless debugging back on later. -->
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
 
     <application
         android:allowBackup="false"
@@ -33,14 +39,9 @@
             </intent-filter>
         </activity>
 
-        <!-- Lets Shizuku hand this app its shell-level binder (for switching the panel off). -->
-        <provider
-            android:name="rikka.shizuku.ShizukuProvider"
-            android:authorities="${applicationId}.shizuku"
-            android:enabled="true"
-            android:exported="true"
-            android:multiprocess="false"
-            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <receiver
+            android:name=".PairingReceiver"
+            android:exported="false" />
 
         <service
             android:name=".MirrorService"

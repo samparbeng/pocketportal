@@ -2,46 +2,46 @@ package app.pocketportal
 
 import android.annotation.SuppressLint
 import android.os.IBinder
-import android.util.Log
 import java.lang.reflect.Method
 import kotlin.system.exitProcess
 
 /**
- * Lives in Shizuku's shell-privileged process, not in the app. It switches the
- * physical panel's power mode, the way scrcpy's "turn screen off" works: the
- * panel goes dark but Android still thinks the display is on, so it keeps
- * drawing and screen capture keeps running.
+ * A tiny command-line program inside the APK, started over the phone's own ADB
+ * connection ([AdbBridge]) as
+ * `CLASSPATH=<apk> app_process / app.pocketportal.PanelPower <0|2>`.
+ *
+ * It switches the physical panel's power mode the way scrcpy's "turn screen
+ * off" does: the panel goes dark but Android still treats the display as on,
+ * so it keeps drawing and screen capture keeps running. Only the shell user may
+ * do this, which is why it can't run inside the app itself.
  *
  * These are hidden platform APIs, reached by reflection. They exist on Android
- * 10 through 17, but a device maker could block them, so failures return false.
+ * 10 through 17, but a device maker could block them; failure exits with 1.
  */
-class ScreenControlService : IScreenControl.Stub() {
+object PanelPower {
+    const val MODE_OFF = 0
+    const val MODE_NORMAL = 2
 
-    private companion object {
-        const val TAG = "ScreenControl"
-        const val POWER_MODE_OFF = 0
-        const val POWER_MODE_NORMAL = 2
-    }
-
-    override fun destroy() {
-        exitProcess(0)
-    }
-
-    override fun setPanelOn(on: Boolean): Boolean = try {
-        val setMode = Class.forName("android.view.SurfaceControl")
-            .getMethod("setDisplayPowerMode", IBinder::class.java, Int::class.javaPrimitiveType)
-        val mode = if (on) POWER_MODE_NORMAL else POWER_MODE_OFF
-        val tokens = displayTokens()
-        tokens.forEach { setMode.invoke(null, it, mode) }
-        tokens.isNotEmpty()
-    } catch (e: Throwable) {
-        Log.w(TAG, "could not change panel power", e)
-        false
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val mode = args.firstOrNull()?.toIntOrNull() ?: MODE_NORMAL
+        val ok = try {
+            val setMode = Class.forName("android.view.SurfaceControl")
+                .getMethod("setDisplayPowerMode", IBinder::class.java, Int::class.javaPrimitiveType)
+            val tokens = displayTokens()
+            tokens.forEach { setMode.invoke(null, it, mode) }
+            tokens.isNotEmpty()
+        } catch (e: Throwable) {
+            System.err.println("panel power failed: $e")
+            false
+        }
+        println(if (ok) "ok" else "failed")
+        exitProcess(if (ok) 0 else 1)
     }
 
     /** Android 14 moved physical display tokens into DisplayControl, inside services.jar. */
     // Lint blocks these for apps targeting API 37, but the restriction applies to app
-    // processes; this class only runs in Shizuku's shell process, where they are allowed.
+    // processes; this program only runs as the shell user, where they are allowed.
     @SuppressLint("BlockedPrivateApi")
     private fun displayTokens(): List<IBinder> = try {
         val create: Method = Class.forName("com.android.internal.os.ClassLoaderFactory").getDeclaredMethod(

@@ -107,8 +107,14 @@ phone screen with Android's screen recorder, upload it to YouTube as *Unlisted*,
 ### Other permissions (no form needed)
 
 - `WRITE_SETTINGS`: optional "Dim" while sharing; brightness is restored when sharing stops.
-- Shizuku (`ShizukuProvider`): optional "Off" mode, which switches the panel off while sharing.
-  Shizuku is a separate app the user installs and starts themselves.
+- `WRITE_SECURE_SETTINGS`: optional "Off" mode. Apps can't be granted it from the Play
+  Store; Pocket Portal grants it to itself only after the user pairs it with their own
+  Wireless debugging (Developer options), and uses it only to switch Wireless debugging
+  back on so it can turn the panel off while sharing and on again afterwards.
+
+> Risk: an app that connects to the phone's own ADB and holds `WRITE_SECURE_SETTINGS` may
+> get extra review. If it's rejected, ship without "Off" (remove `AdbBridge`, `PanelPower`
+> and the permission; "Dim" still works) and appeal with a video of the setup.
 
 ### Foreground service: `mediaProjection`
 
