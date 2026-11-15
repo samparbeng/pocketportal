@@ -134,6 +134,10 @@ Controls in DeX:
 | Thumbstick up/down | Mouse wheel |
 | Toolbar buttons | Back, Home, Recents, Notifications |
 
+With hands instead of controllers, DeX works like a touchscreen: pinch is a tap, pinch-and-drag
+swipes and scrolls, and pinch-and-hold is a long press (which opens DeX's right-click menu).
+The pointer still follows your hand.
+
 ## Notifications and battery in the headset
 
 Under **More options → Notifications in the headset** (on by default). It needs

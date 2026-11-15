@@ -557,21 +557,28 @@
   }
   canvas.addEventListener('pointerleave', () => { if (dex && !mouse) cursor.classList.remove('on'); });
 
+  // In DeX, hands (touch pointers) work like a finger: pinch taps, pinch-and-drag swipes
+  // and scrolls, hold long-presses (DeX's right-click menu). A mouse drag would only select,
+  // never scroll. Controllers and mice keep the mouse.
+  const asMouse = e => dex && e.pointerType !== 'touch';
   canvas.addEventListener('pointerdown', e => {
-    if (dex) return dexDown(e);
+    if (asMouse(e)) return dexDown(e);
+    if (dex) moveCursor(e);
     if (e.button !== 0) return;
     canvas.setPointerCapture(e.pointerId);
     stroke = { pts: [norm(e)], x: e.clientX, y: e.clientY, t0: performance.now(), moved: false, last: 0 };
   });
   canvas.addEventListener('pointermove', e => {
-    if (dex) return dexMove(e);
+    // A hovering hand still moves DeX's pointer.
+    if (asMouse(e) || (dex && !stroke)) return dexMove(e);
+    if (dex) moveCursor(e);
     if (!stroke) return;
     if (Math.hypot(e.clientX - stroke.x, e.clientY - stroke.y) > 8) stroke.moved = true;
     const now = performance.now();
     if (stroke.moved && now - stroke.last > 16) { stroke.pts.push(norm(e)); stroke.last = now; }
   });
   canvas.addEventListener('pointerup', e => {
-    if (dex) return dexUp(e);
+    if (asMouse(e)) return dexUp(e);
     if (!stroke) return;
     const s = stroke; stroke = null;
     const ms = Math.round(performance.now() - s.t0);
