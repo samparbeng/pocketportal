@@ -291,6 +291,19 @@ class MirrorService : Service() {
                 "notifications" -> "key 83"
                 else -> null
             }
+            // Mouse input, which the page sends only for DeX; a real mouse there means a
+            // pointer with hover, right-click menus and wheel scrolling.
+            "hover", "mdown", "mmove", "mup", "click", "scroll" -> if (dexDisplay < 0) null else {
+                val at = px(m.getDouble("x"), m.getDouble("y"))
+                when (m.optString("t")) {
+                    "hover" -> "mouse hover $at"
+                    "mdown" -> "mouse down $at"
+                    "mmove" -> "mouse move $at"
+                    "mup" -> "mouse up $at"
+                    "click" -> "mouse click $at ${if (m.optString("b") == "right") "secondary" else "primary"}"
+                    else -> "mouse scroll $at ${m.optDouble("v", 0.0).coerceIn(-10.0, 10.0).toFloat()}"
+                }
+            }
             else -> null
         }
         if (line != null && AdbBridge.sendInput(line)) return

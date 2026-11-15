@@ -64,7 +64,90 @@ object InputInjector {
             }
             "key" -> key(parts[1].toInt())
             "display" -> displayId = parts[1].toInt()
+            "mouse" -> mouse(parts.drop(1))
         }
+    }
+
+    // ---- Mouse (DeX) -------------------------------------------------------------------------
+    //
+    //     mouse hover X Y           pointer moves with no button held
+    //     mouse down X Y            left button goes down (start of a drag)
+    //     mouse move X Y            pointer moves with the left button held
+    //     mouse up X Y              left button comes up
+    //     mouse click X Y BUTTON    a full click; BUTTON is primary or secondary
+    //     mouse scroll X Y V        wheel; V > 0 scrolls up, < 0 down
+    //
+    // DeX treats these like a real mouse: hover effects, right-click menus, wheel scrolling
+    // and click-drag selection. Injected events don't move the system pointer sprite, so
+    // the headset page draws its own.
+
+    private var mouseDownTime = 0L
+    private var mouseButtons = 0
+    private val setActionButton by lazy {
+        runCatching { MotionEvent::class.java.getMethod("setActionButton", Int::class.javaPrimitiveType) }.getOrNull()
+    }
+
+    private fun mouse(args: List<String>) {
+        val x = args[1].toFloat()
+        val y = args[2].toFloat()
+        when (args[0]) {
+            "hover" -> if (mouseButtons == 0) mouseEvent(MotionEvent.ACTION_HOVER_MOVE, x, y, SystemClock.uptimeMillis(), 0)
+            "down" -> buttonDown(x, y, MotionEvent.BUTTON_PRIMARY)
+            "move" -> if (mouseButtons != 0) mouseEvent(MotionEvent.ACTION_MOVE, x, y, mouseDownTime, mouseButtons)
+            "up" -> buttonUp(x, y)
+            "click" -> {
+                val button = if (args.getOrNull(3) == "secondary") MotionEvent.BUTTON_SECONDARY else MotionEvent.BUTTON_PRIMARY
+                if (mouseButtons != 0) buttonUp(x, y)
+                mouseEvent(MotionEvent.ACTION_HOVER_MOVE, x, y, SystemClock.uptimeMillis(), 0)
+                buttonDown(x, y, button)
+                Thread.sleep(30)
+                buttonUp(x, y)
+            }
+            "scroll" -> {
+                val v = args[3].toFloat().coerceIn(-10f, 10f)
+                mouseEvent(MotionEvent.ACTION_SCROLL, x, y, SystemClock.uptimeMillis(), 0, vscroll = v)
+            }
+        }
+    }
+
+    private fun buttonDown(x: Float, y: Float, button: Int) {
+        mouseDownTime = SystemClock.uptimeMillis()
+        mouseButtons = button
+        mouseEvent(MotionEvent.ACTION_DOWN, x, y, mouseDownTime, button)
+        mouseEvent(MotionEvent.ACTION_BUTTON_PRESS, x, y, mouseDownTime, button, actionButton = button)
+    }
+
+    private fun buttonUp(x: Float, y: Float) {
+        val button = mouseButtons.takeIf { it != 0 } ?: return
+        mouseButtons = 0
+        mouseEvent(MotionEvent.ACTION_BUTTON_RELEASE, x, y, mouseDownTime, 0, actionButton = button)
+        mouseEvent(MotionEvent.ACTION_UP, x, y, mouseDownTime, 0)
+        mouseEvent(MotionEvent.ACTION_HOVER_MOVE, x, y, SystemClock.uptimeMillis(), 0)
+    }
+
+    private fun mouseEvent(
+        action: Int, x: Float, y: Float, downTime: Long, buttons: Int,
+        actionButton: Int = 0, vscroll: Float = 0f,
+    ) {
+        val isButtonEvent = action == MotionEvent.ACTION_BUTTON_PRESS || action == MotionEvent.ACTION_BUTTON_RELEASE
+        val setter = setActionButton
+        if (isButtonEvent && setter == null) return // can't say which button; DOWN/UP still click
+        val props = MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE }
+        val coords = MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            pressure = if (buttons != 0) 1f else 0f
+            size = 1f
+            if (vscroll != 0f) setAxisValue(MotionEvent.AXIS_VSCROLL, vscroll)
+        }
+        val event = MotionEvent.obtain(
+            downTime, SystemClock.uptimeMillis(), action, 1, arrayOf(props), arrayOf(coords),
+            0, buttons, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
+        )
+        if (isButtonEvent) setter?.invoke(event, actionButton)
+        if (displayId != 0) setDisplayId.invoke(event, displayId)
+        inject(event)
+        event.recycle()
     }
 
     private fun press(x: Float, y: Float, ms: Long) {

@@ -31,6 +31,13 @@
   #pin p { margin:0; color:var(--muted); }
   #pin input { font:28px/1 ui-monospace, monospace; letter-spacing:.3em; text-align:center; color:var(--text); background:#0f1419; border:1px solid var(--line); border-radius:12px; padding:12px; }
   #pinError { color:var(--warn); min-height:1.4em; }
+  /* DeX: our own mouse pointer, since injected mouse events don't show Android's. */
+  body.dex canvas { cursor:none; border-radius:6px; }
+  #cursor { position:absolute; left:0; top:0; width:22px; height:22px; pointer-events:none; display:none; z-index:2; }
+  #cursor.on { display:block; }
+  #cursor svg { position:absolute; left:0; top:0; filter:drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+  #cursor .ring { position:absolute; left:-14px; top:-14px; width:28px; height:28px; border-radius:50%; border:3px solid var(--accent); opacity:0; transform:scale(.4); }
+  #cursor.hold .ring { opacity:1; transform:scale(1); transition:transform .5s linear, opacity .1s; }
 </style>
 </head>
 <body>
@@ -38,6 +45,7 @@
   <canvas id="screen" width="9" height="16"></canvas>
   <div id="status">Connecting…</div>
   <div id="stats"></div>
+  <div id="cursor"><div class="ring"></div><svg width="22" height="22" viewBox="0 0 22 22"><path d="M2 1.5v16.2l4.3-4.1 2.8 6.4 2.9-1.3-2.8-6.3h6z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg></div>
   <div id="pin">
     <form id="pinForm">
       <h1>Pocket Portal</h1>
@@ -288,6 +296,7 @@
           sound.label();
         } else if (msg.type === 'video') {
           video.configure(msg);
+          setDex(!!msg.dex);
           // The headset app opens a wide window for DeX and goes back to the tall one after.
           if (window.PocketPortalApp && window.PocketPortalApp.shape) window.PocketPortalApp.shape(!!msg.dex);
         } else if (msg.type === 'sync') {
@@ -348,18 +357,70 @@
     const r = canvas.getBoundingClientRect();
     return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
   }
+  // DeX gets a mouse instead: a pointer that hovers, click and drag, hold (or a real
+  // right button) for the right-click menu, and the wheel/thumbstick scrolls.
+  let dex = false, mouse = null, hoverAt = 0;
+  const cursor = document.getElementById('cursor');
+  const HOLD_MS = 500;
+  function setDex(on) {
+    if (dex === on) return;
+    dex = on; mouse = null; stroke = null;
+    document.body.classList.toggle('dex', on);
+    cursor.className = '';
+  }
+  function moveCursor(e) {
+    const r = stage.getBoundingClientRect(), c = canvas.getBoundingClientRect();
+    const x = Math.min(c.right, Math.max(c.left, e.clientX)), y = Math.min(c.bottom, Math.max(c.top, e.clientY));
+    cursor.style.transform = `translate(${x - r.left}px, ${y - r.top}px)`;
+    cursor.classList.add('on');
+  }
+  function at(e) { const [x, y] = norm(e); return { x, y }; }
+  function dexDown(e) {
+    canvas.setPointerCapture(e.pointerId);
+    moveCursor(e);
+    if (e.button === 2) { send({ t: 'click', ...at(e), b: 'right' }); return; }
+    mouse = { start: at(e), x: e.clientX, y: e.clientY, t0: performance.now(), drag: false, last: 0 };
+    cursor.classList.add('hold');
+  }
+  function dexMove(e) {
+    moveCursor(e);
+    const now = performance.now();
+    if (!mouse) {
+      if (now - hoverAt > 33) { hoverAt = now; send({ t: 'hover', ...at(e) }); }
+      return;
+    }
+    if (!mouse.drag && Math.hypot(e.clientX - mouse.x, e.clientY - mouse.y) > 8) {
+      mouse.drag = true;
+      cursor.classList.remove('hold');
+      send({ t: 'mdown', ...mouse.start });
+    }
+    if (mouse.drag && now - mouse.last > 16) { mouse.last = now; send({ t: 'mmove', ...at(e) }); }
+  }
+  function dexUp(e) {
+    const m = mouse; mouse = null;
+    cursor.classList.remove('hold');
+    if (!m) return;
+    if (m.drag) send({ t: 'mup', ...at(e) });
+    else if (performance.now() - m.t0 >= HOLD_MS) send({ t: 'click', ...m.start, b: 'right' });
+    else send({ t: 'click', ...m.start });
+  }
+  canvas.addEventListener('pointerleave', () => { if (dex && !mouse) cursor.classList.remove('on'); });
+
   canvas.addEventListener('pointerdown', e => {
+    if (dex) return dexDown(e);
     if (e.button !== 0) return;
     canvas.setPointerCapture(e.pointerId);
     stroke = { pts: [norm(e)], x: e.clientX, y: e.clientY, t0: performance.now(), moved: false, last: 0 };
   });
   canvas.addEventListener('pointermove', e => {
+    if (dex) return dexMove(e);
     if (!stroke) return;
     if (Math.hypot(e.clientX - stroke.x, e.clientY - stroke.y) > 8) stroke.moved = true;
     const now = performance.now();
     if (stroke.moved && now - stroke.last > 16) { stroke.pts.push(norm(e)); stroke.last = now; }
   });
   canvas.addEventListener('pointerup', e => {
+    if (dex) return dexUp(e);
     if (!stroke) return;
     const s = stroke; stroke = null;
     const ms = Math.round(performance.now() - s.t0);
@@ -374,14 +435,24 @@
     const pts = s.pts.filter((_, i) => i % step === 0 || i === s.pts.length - 1);
     send({ t: 'swipe', pts, ms: Math.min(Math.max(ms, 80), 4000) });
   });
-  canvas.addEventListener('pointercancel', () => { stroke = null; });
-  canvas.addEventListener('contextmenu', e => { e.preventDefault(); send({ t: 'key', k: 'back' }); });
+  canvas.addEventListener('pointercancel', e => {
+    stroke = null;
+    if (dex && mouse) { if (mouse.drag) send({ t: 'mup', ...at(e) }); mouse = null; cursor.classList.remove('hold'); }
+  });
+  // On DeX the right button is handled in pointerdown, so the menu event is just swallowed.
+  canvas.addEventListener('contextmenu', e => { e.preventDefault(); if (!dex) send({ t: 'key', k: 'back' }); });
 
-  // Thumbstick / mouse wheel scrolls the phone with a short swipe.
+  // Thumbstick / mouse wheel scrolls the phone with a short swipe (on DeX, real wheel steps).
   let wheelAt = 0;
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
     const now = performance.now();
+    if (dex) {
+      if (now - wheelAt < 60 || !e.deltaY) return;
+      wheelAt = now;
+      moveCursor(e);
+      return send({ t: 'scroll', ...at(e), v: -Math.sign(e.deltaY) });
+    }
     if (now - wheelAt < 250 || !e.deltaY) return;
     wheelAt = now;
     const [x, y] = norm(e);
