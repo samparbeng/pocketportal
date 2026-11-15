@@ -217,6 +217,10 @@
       if (this.latency != null) parts.push(`<b>${Math.round(this.latency)} ms</b>`);
       this.el.innerHTML = ws && ws.readyState === 1 && (this.frames || this.bytes) ? parts.join(' · ') : '';
       this.el.classList.toggle('off', !this.on);
+      // The phone's troubleshooter shows what the headset sees, every other second.
+      if ((this.ticks = (this.ticks || 0) + 1) % 2 === 0 && (this.frames || this.bytes)) {
+        send({ t: 'stats', fps: this.frames, mbps: +(this.bytes * 8 / 1e6).toFixed(1), latency: this.latency == null ? -1 : Math.round(this.latency), codec: this.codec });
+      }
       this.frames = 0; this.bytes = 0;
     },
     toggle() {

@@ -51,6 +51,10 @@ object MirrorState {
     val dex = MutableStateFlow(false)
     /** Show the phone's notifications (with quick reply) and battery warnings in the headset. */
     val notifications = MutableStateFlow(true)
+    /** What the headset last reported seeing, for the troubleshooter; null when nobody's watching. */
+    val headsetStats = MutableStateFlow<HeadsetStats?>(null)
+    /** The stream's current bitrate ceiling after adapting to the Wi-Fi, in bits/s (0 when not streaming video). */
+    val bitrateNow = MutableStateFlow(0)
 
     private var loaded = false
 
@@ -103,6 +107,9 @@ object MirrorState {
 
     private fun newPin(): String = (SecureRandom().nextInt(900_000) + 100_000).toString()
 }
+
+/** Frames per second drawn, megabits per second received, and capture-to-screen latency (-1 unknown) in the headset. */
+data class HeadsetStats(val fps: Int, val mbps: Double, val latencyMs: Int, val codec: String)
 
 /** The phone's full-screen size in pixels, including system bars, in its current rotation. */
 @Suppress("DEPRECATION")

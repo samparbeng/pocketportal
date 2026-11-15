@@ -71,12 +71,12 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 
-private val Accent = Color(0xFF4FA3FF)
-private val Muted = Color(0xFFA9B4C0)
-private val Live = Color(0xFF4CD787)
-private val Warn = Color(0xFFFFB74D)
-private val Danger = Color(0xFFFF8A80)
-private val Panel = Color(0xFF1C232B)
+internal val Accent = Color(0xFF4FA3FF)
+internal val Muted = Color(0xFFA9B4C0)
+internal val Live = Color(0xFF4CD787)
+internal val Warn = Color(0xFFFFB74D)
+internal val Danger = Color(0xFFFF8A80)
+internal val Panel = Color(0xFF1C232B)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -118,6 +118,7 @@ private fun MirrorScreen() {
     val error by MirrorState.error.collectAsStateWithLifecycle()
     var showDisclosure by remember { mutableStateOf(false) }
     var showOptions by rememberSaveable { mutableStateOf(false) }
+    var showTroubleshoot by rememberSaveable { mutableStateOf(false) }
 
     // The Wi-Fi address can change while the app is open, so keep checking.
     var address by remember { mutableStateOf(localIpAddress()) }
@@ -230,6 +231,23 @@ private fun MirrorScreen() {
                 onAction = { showDisclosure = true },
             )
         }
+
+        // ---- Troubleshooter ----------------------------------------------------------------
+        HorizontalDivider(color = Color(0xFF26303B))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { showTroubleshoot = !showTroubleshoot }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Troubleshoot", fontSize = 17.sp)
+                Text("Wi-Fi, delay, permissions", color = Muted, fontSize = 13.sp)
+            }
+            Text(if (showTroubleshoot) "▴" else "▾", color = Muted, fontSize = 17.sp)
+        }
+        if (showTroubleshoot) TroubleshootPanel()
 
         // ---- Everything else ---------------------------------------------------------------
         HorizontalDivider(color = Color(0xFF26303B))

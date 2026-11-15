@@ -218,6 +218,7 @@ class MirrorService : Service() {
             onMessage = { text -> handleInput(JSONObject(text)) },
             onViewersChanged = {
                 MirrorState.viewers.value = it
+                if (it == 0) MirrorState.headsetStats.value = null
                 handler.post { chooseMode() }
             },
             onNeedKeyframe = { encoder?.requestKeyframe() ?: dex?.requestKeyframe() },
@@ -296,6 +297,15 @@ class MirrorService : Service() {
         val dexDisplay = dex?.displayId ?: -1
         when (m.optString("t")) {
             "reply", "open", "dismiss" -> return HeadsetNotifications.instance?.handle(m, dexDisplay) ?: Unit
+            "stats" -> {
+                MirrorState.headsetStats.value = HeadsetStats(
+                    fps = m.optInt("fps"),
+                    mbps = m.optDouble("mbps", 0.0),
+                    latencyMs = m.optInt("latency", -1),
+                    codec = m.optString("codec").take(20),
+                )
+                return
+            }
         }
         val (width, height) = if (dexDisplay >= 0) DexSession.WIDTH to DexSession.HEIGHT
         else realScreenMetrics(this).let { it.widthPixels to it.heightPixels }
@@ -400,6 +410,9 @@ class MirrorService : Service() {
                     dexBitrate = targetBitrate
                     session.setBitrate(targetBitrate)
                 }
+                MirrorState.bitrateNow.value = targetBitrate
+            } else {
+                MirrorState.bitrateNow.value = 0
             }
             handler.postDelayed(this, 500)
         }
@@ -629,6 +642,8 @@ class MirrorService : Service() {
         captureThread.quitSafely()
         MirrorState.running.value = false
         MirrorState.viewers.value = 0
+        MirrorState.headsetStats.value = null
+        MirrorState.bitrateNow.value = 0
         super.onDestroy()
     }
 }
