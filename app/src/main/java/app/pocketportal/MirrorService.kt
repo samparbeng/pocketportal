@@ -311,7 +311,9 @@ class MirrorService : Service() {
     private fun sendVideoConfig() {
         dex?.let { session ->
             val config = session.config ?: return
-            server?.broadcastText(JSONObject(config.toString()).put("type", "video").put("fps", quality.videoFps).toString())
+            server?.broadcastText(
+                JSONObject(config.toString()).put("type", "video").put("fps", quality.videoFps).put("dex", true).toString()
+            )
             return
         }
         val enc = encoder ?: return

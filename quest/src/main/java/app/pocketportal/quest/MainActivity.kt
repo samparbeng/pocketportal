@@ -137,7 +137,8 @@ private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
     // Reopen the last phone by itself when it shows up, until the user backs out; again each time the panel returns.
     var autoOpen by remember { mutableStateOf(true) }
     val started by starts.collectAsStateWithLifecycle()
-    LaunchedEffect(started) { autoOpen = true }
+    // ...except right after the user closed the wide DeX window.
+    LaunchedEffect(started) { autoOpen = !WideViewerActivity.consumeUserClosed() }
 
     fun pinKey(p: Phone) = "pin:${p.host}"
     fun certKey(p: Phone) = "cert:${p.host}"
@@ -165,6 +166,15 @@ private fun App(finder: PhoneFinder, starts: StateFlow<Int>) {
                 trustedFingerprint = current.fingerprint ?: prefs.getString(certKey(current), null),
                 onTrust = { prefs.edit().putString(certKey(current), it).apply() },
                 onClose = { phone = null; pin = null; autoOpen = false },
+                // DeX is landscape: carry on in the wide window.
+                onLandscape = { wide ->
+                    if (wide) {
+                        val fingerprint = current.fingerprint ?: prefs.getString(certKey(current), null)
+                        WideViewerActivity.open(context, current, currentPin, fingerprint)
+                        phone = null; pin = null; autoOpen = false
+                        (context as? android.app.Activity)?.finish()
+                    }
+                },
                 onWrongPin = {
                     autoOpen = false
                     prefs.edit().remove(pinKey(current)).apply()
@@ -333,13 +343,15 @@ private fun parseAddress(text: String): Phone? {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun Viewer(
+internal fun Viewer(
     phone: Phone,
     pin: String,
     trustedFingerprint: String?,
     onTrust: (String) -> Unit,
     onClose: () -> Unit,
     onWrongPin: () -> Unit,
+    /** The phone says whether it's showing DeX (landscape) or its own screen. */
+    onLandscape: (Boolean) -> Unit = {},
 ) {
     BackHandler(onBack = onClose)
     var webView by remember { mutableStateOf<WebView?>(null) }
@@ -350,7 +362,8 @@ private fun Viewer(
     val trust by rememberUpdatedState(onTrust)
     val trusted by rememberUpdatedState(trustedFingerprint)
     // The viewer page calls this instead of showing its own PIN box when it runs in this app.
-    val bridge = remember { QuestBridge { wrongPin() } }
+    val landscape by rememberUpdatedState(onLandscape)
+    val bridge = remember { QuestBridge(onWrongPin = { wrongPin() }, onShape = { landscape(it) }) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -458,12 +471,18 @@ private fun Viewer(
 }
 
 /** Exposed to the viewer page as `window.PocketPortalApp`. */
-private class QuestBridge(private val onWrongPin: () -> Unit) {
+private class QuestBridge(private val onWrongPin: () -> Unit, private val onShape: (Boolean) -> Unit) {
     private val main = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
     fun wrongPin() {
         main.post(onWrongPin)
+    }
+
+    /** Called with true when the phone streams DeX, false for its own screen. */
+    @JavascriptInterface
+    fun shape(landscape: Boolean) {
+        main.post { onShape(landscape) }
     }
 }
 

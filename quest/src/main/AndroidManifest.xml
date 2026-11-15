@@ -38,5 +38,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The viewer in a wide 16:9 panel, opened by itself when the phone streams Samsung DeX.
+             Its own task, so Horizon OS opens it at this size instead of keeping the tall panel. -->
+        <activity
+            android:name=".WideViewerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:taskAffinity="app.pocketportal.quest.wide">
+            <layout
+                android:defaultWidth="1600dp"
+                android:defaultHeight="1000dp"
+                android:gravity="center" />
+        </activity>
     </application>
 </manifest>

@@ -288,6 +288,8 @@
           sound.label();
         } else if (msg.type === 'video') {
           video.configure(msg);
+          // The headset app opens a wide window for DeX and goes back to the tall one after.
+          if (window.PocketPortalApp && window.PocketPortalApp.shape) window.PocketPortalApp.shape(!!msg.dex);
         } else if (msg.type === 'sync') {
           clock.pong(msg);
         }
