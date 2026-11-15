@@ -41,6 +41,8 @@ object MirrorState {
     val quality = MutableStateFlow(Quality.Balanced)
     /** Stream what the phone is playing to the headset. */
     val sound = MutableStateFlow(true)
+    /** What the phone's own screen does while sharing. */
+    val screenMode = MutableStateFlow(ScreenMode.Normal)
 
     private var loaded = false
 
@@ -51,6 +53,7 @@ object MirrorState {
         pin.value = prefs.getString("pin", null) ?: newPin().also { prefs.edit().putString("pin", it).apply() }
         quality.value = runCatching { Quality.valueOf(prefs.getString("quality", "")!!) }.getOrDefault(Quality.Balanced)
         sound.value = prefs.getBoolean("sound", true)
+        screenMode.value = runCatching { ScreenMode.valueOf(prefs.getString("screen", "")!!) }.getOrDefault(ScreenMode.Normal)
     }
 
     fun regeneratePin(context: Context) {
@@ -61,6 +64,11 @@ object MirrorState {
     fun setQuality(context: Context, value: Quality) {
         quality.value = value
         prefs(context).edit().putString("quality", value.name).apply()
+    }
+
+    fun setScreenMode(context: Context, value: ScreenMode) {
+        screenMode.value = value
+        prefs(context).edit().putString("screen", value.name).apply()
     }
 
     fun setSound(context: Context, value: Boolean) {

@@ -24,6 +24,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.Display
@@ -77,6 +78,7 @@ class MirrorService : Service() {
     private var server: MirrorServer? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var audio: AudioStreamer? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     private var advertising = false
 
     private val nsdListener = object : NsdManager.RegistrationListener {
@@ -222,6 +224,14 @@ class MirrorService : Service() {
 
         // Tell open viewers when remote touch is switched on or off on the phone.
         scope.launch { MirrorState.touchEnabled.drop(1).collect { sendHello() } }
+
+        // Sharing stops if the phone sleeps, and with its panel switched off nobody can
+        // see it time out, so stay awake until sharing ends.
+        @Suppress("DEPRECATION")
+        wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, "pocketportal:sharing")
+            .also { it.acquire() }
+        PhoneScreen.apply(this, MirrorState.screenMode.value)
 
         if (MirrorState.sound.value && AudioStreamer.hasPermission(this)) {
             val streamer = AudioStreamer { chunk -> server?.broadcastAudio(chunk) }
@@ -400,6 +410,8 @@ class MirrorService : Service() {
         scope.cancel()
         if (advertising) runCatching { getSystemService(NsdManager::class.java).unregisterService(nsdListener) }
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
+        PhoneScreen.restore(this)
+        wakeLock?.takeIf { it.isHeld }?.release()
         audio?.stop()
         audio = null
         server?.stop()

@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Capturing other apps' sound (not the microphone) still needs this permission. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- "Dim while sharing": lowers brightness, then puts the user's setting back. -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
 
     <application
         android:allowBackup="false"
@@ -30,6 +32,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Lets Shizuku hand this app its shell-level binder (for switching the panel off). -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <service
             android:name=".MirrorService"

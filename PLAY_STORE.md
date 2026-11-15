@@ -104,6 +104,12 @@ phone screen with Android's screen recorder, upload it to YouTube as *Unlisted*,
 > Risk: Google reviews non-accessibility uses of this API strictly. If it's rejected,
 > ship 1.0 as view-only by removing `TouchService` from the manifest, and appeal with the video.
 
+### Other permissions (no form needed)
+
+- `WRITE_SETTINGS`: optional "Dim" while sharing; brightness is restored when sharing stops.
+- Shizuku (`ShizukuProvider`): optional "Off" mode, which switches the panel off while sharing.
+  Shizuku is a separate app the user installs and starts themselves.
+
 ### Foreground service: `mediaProjection`
 
 - **Use case:** *Screen sharing to the user's VR headset, started by the user and stoppable

@@ -38,7 +38,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release")
         }
     }
@@ -50,6 +50,9 @@ android {
 
     buildFeatures {
         compose = true
+        // IScreenControl: the binder interface to the Shizuku-hosted screen service.
+        aidl = true
+        buildConfig = true
     }
 }
 
@@ -62,4 +65,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+
+    // Shizuku lends the app shell-level access, needed to switch the panel off while sharing.
+    val shizuku = "13.1.5"
+    implementation("dev.rikka.shizuku:api:$shizuku")
+    implementation("dev.rikka.shizuku:provider:$shizuku")
 }

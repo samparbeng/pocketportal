@@ -51,6 +51,26 @@ Without this step the headset can still watch, but it can't control the phone.
 2. Enter the PIN. The phone screen appears. You can resize or curve the browser
    window, or tap **Full screen**.
 
+## Phone screen while sharing
+
+In Pocket Portal, under **Phone screen while sharing**:
+
+- **Normal:** the phone shows its screen as usual.
+- **Dim:** brightness drops to the minimum while sharing and comes back when you stop.
+  Needs **Allow brightness control** once.
+- **Off:** the phone's panel switches off completely while the headset keeps showing
+  everything (like scrcpy). Needs the free **Shizuku** app (by Rikka) from the Play Store:
+  1. Install Shizuku and open it once.
+  2. Start it: in Shizuku, use **Start via Wireless debugging**, or plug the phone into a PC and run
+     `adb shell /data/app/.../moe.shizuku.privileged.api-.../lib/arm64/libshizuku.so`
+     (Shizuku's "Start via computer" screen shows the exact command).
+  3. In Pocket Portal choose **Off**, tap **Allow in Shizuku** and allow it.
+
+  Shizuku stops when the phone restarts; start it again the same way. Until it's running,
+  "Off" falls back to dimming. Press the power button twice to see the phone's screen again.
+
+The phone stays awake while sharing, so the screen timeout can't end the session.
+
 Controls in the headset:
 
 | Do this | Phone gets |

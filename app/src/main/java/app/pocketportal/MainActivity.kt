@@ -62,6 +62,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MirrorState.init(this)
+        PhoneScreen.watchShizuku()
+        // If a previous session was killed while dimmed, give the user their brightness back.
+        if (!MirrorState.running.value) PhoneScreen.undim(this)
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
@@ -88,14 +91,21 @@ private fun MirrorScreen() {
     val pin by MirrorState.pin.collectAsStateWithLifecycle()
     val quality by MirrorState.quality.collectAsStateWithLifecycle()
     val sound by MirrorState.sound.collectAsStateWithLifecycle()
+    val screenMode by MirrorState.screenMode.collectAsStateWithLifecycle()
+    val shizukuReady by PhoneScreen.shizukuReady.collectAsStateWithLifecycle()
+    val shizukuNeedsPermission by PhoneScreen.shizukuNeedsPermission.collectAsStateWithLifecycle()
     val error by MirrorState.error.collectAsStateWithLifecycle()
     var showDisclosure by remember { mutableStateOf(false) }
 
-    // The Wi-Fi address can change while the app is open, so keep checking it.
+    // The Wi-Fi address and the permissions below can change while the app is open
+    // (the user switches networks or comes back from Settings), so keep checking.
     var address by remember { mutableStateOf(localIpAddress()) }
+    var canDim by remember { mutableStateOf(PhoneScreen.canDim(context)) }
     LaunchedEffect(Unit) {
         while (true) {
             address = localIpAddress()
+            canDim = PhoneScreen.canDim(context)
+            PhoneScreen.refresh()
             delay(3000)
         }
     }
@@ -198,6 +208,51 @@ private fun MirrorScreen() {
                     enabled = !running,
                     onCheckedChange = { MirrorState.setSound(context, it) },
                 )
+            }
+            Text("Phone screen while sharing", color = Muted)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ScreenMode.entries.forEach { m ->
+                    FilterChip(
+                        selected = m == screenMode,
+                        enabled = !running,
+                        onClick = { MirrorState.setScreenMode(context, m) },
+                        label = { Text(m.label) },
+                    )
+                }
+            }
+            if (screenMode == ScreenMode.Off) {
+                when {
+                    shizukuReady -> Text(
+                        "The phone's screen turns off while sharing; the headset still shows everything. " +
+                            "Press the power button twice to see the phone's screen again.",
+                        color = Muted, fontSize = 13.sp,
+                    )
+                    shizukuNeedsPermission -> {
+                        Text("Shizuku is running. Allow Pocket Portal in it to switch the screen off.", color = Muted, fontSize = 13.sp)
+                        OutlinedButton(onClick = { PhoneScreen.requestShizukuPermission() }) { Text("Allow in Shizuku") }
+                    }
+                    else -> {
+                        Text(
+                            "Switching the screen off needs the free Shizuku app, started once with Wireless " +
+                                "debugging (and again after the phone restarts). Until then the screen dims instead.",
+                            color = Muted, fontSize = 13.sp,
+                        )
+                        OutlinedButton(onClick = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api"))
+                            )
+                        }) { Text("Get Shizuku") }
+                    }
+                }
+            }
+            val needsDim = screenMode == ScreenMode.Dim || (screenMode == ScreenMode.Off && !shizukuReady)
+            if (needsDim && !canDim) {
+                Text("To dim the screen, allow Pocket Portal to change the brightness.", color = Muted, fontSize = 13.sp)
+                OutlinedButton(onClick = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:${context.packageName}"))
+                    )
+                }) { Text("Allow brightness control") }
             }
             if (running) {
                 OutlinedButton(onClick = { MirrorService.stop(context) }) { Text("Stop sharing") }
