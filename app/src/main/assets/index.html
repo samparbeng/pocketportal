@@ -31,6 +31,26 @@
   #pin p { margin:0; color:var(--muted); }
   #pin input { font:28px/1 ui-monospace, monospace; letter-spacing:.3em; text-align:center; color:var(--text); background:#0f1419; border:1px solid var(--line); border-radius:12px; padding:12px; }
   #pinError { color:var(--warn); min-height:1.4em; }
+  /* Phone notifications as toasts, newest on top, and the phone's battery. */
+  #toasts { position:absolute; top:52px; right:12px; width:min(360px, calc(100% - 24px)); display:flex; flex-direction:column; gap:8px; z-index:3; pointer-events:none; }
+  .toast { pointer-events:auto; background:rgba(22,28,35,.96); border:1px solid var(--line); border-radius:14px; padding:12px; box-shadow:0 6px 24px rgba(0,0,0,.45); animation:toastIn .18s ease-out; }
+  .toast.out { opacity:0; transform:translateX(12px); transition:opacity .2s, transform .2s; }
+  @keyframes toastIn { from { opacity:0; transform:translateX(12px); } }
+  .toast .head { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; }
+  .toast .head img { width:20px; height:20px; border-radius:5px; }
+  .toast .head .app { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .toast .x { background:none; border:none; color:var(--muted); padding:2px 6px; min-width:0; font-size:16px; }
+  .toast .title { font-weight:600; margin-top:6px; overflow-wrap:anywhere; }
+  .toast .body { color:#c9d2db; font-size:14px; margin-top:2px; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+  .toast .acts { display:flex; gap:8px; margin-top:10px; }
+  .toast .acts button { padding:8px 14px; min-width:0; font-size:14px; }
+  .toast form { display:flex; gap:8px; margin-top:10px; }
+  .toast form input { flex:1; min-width:0; font:inherit; font-size:14px; color:var(--text); background:#0f1419; border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
+  .toast .note { color:var(--accent); font-size:13px; margin-top:8px; }
+  .toast.battery { border-color:var(--warn); }
+  #battery { position:absolute; top:12px; left:12px; background:rgba(22,28,35,.85); border:1px solid var(--line); border-radius:10px; padding:4px 10px; color:var(--muted); font:13px/1.4 ui-monospace, monospace; pointer-events:none; }
+  #battery.low { color:var(--warn); }
+  #battery:empty { display:none; }
   /* DeX: our own mouse pointer, since injected mouse events don't show Android's. */
   body.dex canvas { cursor:none; border-radius:6px; }
   #cursor { position:absolute; left:0; top:0; width:22px; height:22px; pointer-events:none; display:none; z-index:2; }
@@ -45,6 +65,8 @@
   <canvas id="screen" width="9" height="16"></canvas>
   <div id="status">Connecting…</div>
   <div id="stats"></div>
+  <div id="battery"></div>
+  <div id="toasts"></div>
   <div id="cursor"><div class="ring"></div><svg width="22" height="22" viewBox="0 0 22 22"><path d="M2 1.5v16.2l4.3-4.1 2.8 6.4 2.9-1.3-2.8-6.3h6z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg></div>
   <div id="pin">
     <form id="pinForm">
@@ -70,6 +92,7 @@
   <button id="kbd">⌨ Keyboard</button>
   <button id="sound" hidden>🔊 Sound</button>
   <button id="statsBtn">⏱ Stats</button>
+  <button id="alertsBtn" hidden>🔔 Alerts</button>
   <button id="full">⛶ Full screen</button>
 </div>
 <script>
@@ -205,6 +228,119 @@
   setInterval(() => stats.tick(), 1000);
   document.getElementById('statsBtn').addEventListener('click', () => stats.toggle());
 
+  // The phone's notifications pop up as toasts: reply right here (messaging apps),
+  // open on the phone (or DeX), or dismiss. Low battery and charger changes too.
+  // Notification text comes from other apps, so it only ever goes in as text.
+  const toasts = {
+    box: document.getElementById('toasts'), btn: document.getElementById('alertsBtn'),
+    on: (() => { try { return localStorage.getItem('pocketportal-alerts') !== '0'; } catch { return true; } })(),
+    byKey: new Map(), MAX: 3, SHOW_MS: 9000,
+    el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; },
+    label() { this.btn.textContent = this.on ? '🔔 Alerts' : '🔕 Alerts'; },
+    toggle() {
+      this.on = !this.on;
+      try { localStorage.setItem('pocketportal-alerts', this.on ? '1' : '0'); } catch {}
+      if (!this.on) [...this.byKey.keys()].forEach(k => this.remove(k));
+      this.label();
+    },
+    // A toast stays while the pointer is on it or a reply is being typed, else fades after SHOW_MS.
+    timer(t) {
+      clearTimeout(t._hide);
+      if (t._busy || t.matches(':hover')) return;
+      t._hide = setTimeout(() => this.remove(t._key), this.SHOW_MS);
+    },
+    show(key, build) {
+      if (!this.on) return;
+      const old = this.byKey.get(key);
+      const t = this.el('div', 'toast');
+      t._key = key;
+      build(t);
+      t.addEventListener('pointerenter', () => clearTimeout(t._hide));
+      t.addEventListener('pointerleave', () => this.timer(t));
+      if (old) { clearTimeout(old._hide); old.remove(); this.byKey.delete(key); }
+      this.box.prepend(t);
+      this.byKey.set(key, t); // Map order = age, newest last
+      while (this.byKey.size > this.MAX) this.remove(this.byKey.keys().next().value);
+      this.timer(t);
+    },
+    remove(key) {
+      const t = this.byKey.get(key);
+      if (!t) return;
+      this.byKey.delete(key);
+      clearTimeout(t._hide);
+      t.classList.add('out');
+      setTimeout(() => t.remove(), 220);
+    },
+    head(t, app, icon, onClose) {
+      const head = this.el('div', 'head');
+      if (icon && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(icon)) { const img = this.el('img'); img.src = icon; img.alt = ''; head.append(img); }
+      head.append(this.el('span', 'app', app));
+      const x = this.el('button', 'x', '✕'); x.title = 'Dismiss';
+      x.addEventListener('click', onClose);
+      head.append(x);
+      t.append(head);
+    },
+    notif(n) {
+      this.show(n.key, t => {
+        this.head(t, n.app || 'Phone', n.icon, () => { send({ t: 'dismiss', key: n.key }); this.remove(n.key); });
+        if (n.title) t.append(this.el('div', 'title', n.title));
+        if (n.text) t.append(this.el('div', 'body', n.text));
+        const acts = this.el('div', 'acts');
+        if (n.reply) {
+          const b = this.el('button', '', '↩ Reply');
+          b.addEventListener('click', () => {
+            acts.remove();
+            t._busy = true; clearTimeout(t._hide);
+            const form = this.el('form'), input = this.el('input');
+            input.placeholder = 'Reply…'; input.autocomplete = 'off'; input.maxLength = 2000;
+            const go = this.el('button', '', 'Send'); go.type = 'submit';
+            form.append(input, go);
+            form.addEventListener('submit', e => {
+              e.preventDefault();
+              if (!input.value.trim()) return;
+              send({ t: 'reply', key: n.key, s: input.value });
+              form.replaceWith(this.el('div', 'note', 'Sent'));
+              t._busy = false;
+              t._hide = setTimeout(() => this.remove(n.key), 1500);
+            });
+            input.addEventListener('keydown', e => { if (e.key === 'Escape') { t._busy = false; this.remove(n.key); } });
+            t.append(form);
+            input.focus();
+          });
+          acts.append(b);
+        }
+        if (n.open) {
+          const b = this.el('button', '', dex ? 'Open in DeX' : 'Open on phone');
+          b.addEventListener('click', () => { send({ t: 'open', key: n.key }); this.remove(n.key); });
+          acts.append(b);
+        }
+        if (acts.childElementCount) t.append(acts);
+      });
+    },
+    gone(key) { const t = this.byKey.get(key); if (t && !t._busy) this.remove(key); },
+  };
+  toasts.btn.addEventListener('click', () => toasts.toggle());
+  toasts.label();
+
+  const battery = {
+    el: document.getElementById('battery'), level: -1, charging: false,
+    update(msg) {
+      const was = this.level, wasCharging = this.charging;
+      this.level = msg.level; this.charging = !!msg.charging;
+      if (this.level < 0) { this.el.textContent = ''; return; }
+      this.el.textContent = `${this.charging ? '⚡' : '🔋'} ${this.level}%`;
+      this.el.classList.toggle('low', !this.charging && this.level <= 15);
+      if (was < 0) return; // first report after connecting: no toast
+      const say = text => toasts.show('battery', t => {
+        t.classList.add('battery');
+        toasts.head(t, 'Phone battery', null, () => toasts.remove('battery'));
+        t.append(toasts.el('div', 'title', text));
+      });
+      if (this.charging !== wasCharging) say(this.charging ? `Charging · ${this.level}%` : `Charger unplugged · ${this.level}%`);
+      else if (!this.charging && [20, 10, 5].some(n => was > n && this.level <= n)) say(`Battery low · ${this.level}%`);
+    },
+  };
+
   // H.265 or H.264 video, decoded by the headset's hardware through WebCodecs. Browsers
   // only offer WebCodecs on secure (HTTPS) pages; without it the phone sends JPEG frames.
   // If decoding fails, the page reconnects asking for the next codec down.
@@ -294,6 +430,13 @@
           if (sound.muted) send({ t: 'audio', on: false });
           sound.start();
           sound.label();
+          toasts.btn.hidden = !msg.notifications;
+        } else if (msg.type === 'notif') {
+          toasts.notif(msg);
+        } else if (msg.type === 'notif-gone') {
+          toasts.gone(msg.key);
+        } else if (msg.type === 'battery') {
+          battery.update(msg);
         } else if (msg.type === 'video') {
           video.configure(msg);
           setDex(!!msg.dex);

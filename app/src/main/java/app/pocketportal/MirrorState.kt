@@ -49,6 +49,8 @@ object MirrorState {
     val screenMode = MutableStateFlow(ScreenMode.Normal)
     /** Show a Samsung DeX desktop in the headset instead of the phone's screen (needs [AdbBridge]). */
     val dex = MutableStateFlow(false)
+    /** Show the phone's notifications (with quick reply) and battery warnings in the headset. */
+    val notifications = MutableStateFlow(true)
 
     private var loaded = false
 
@@ -60,6 +62,7 @@ object MirrorState {
         quality.value = runCatching { Quality.valueOf(prefs.getString("quality", "")!!) }.getOrDefault(Quality.Balanced)
         sound.value = prefs.getBoolean("sound", true)
         dex.value = prefs.getBoolean("dex", false)
+        notifications.value = prefs.getBoolean("notifications", true)
         screenMode.value = runCatching { ScreenMode.valueOf(prefs.getString("screen", "")!!) }.getOrDefault(ScreenMode.Normal)
     }
 
@@ -81,6 +84,11 @@ object MirrorState {
     fun setDex(context: Context, value: Boolean) {
         dex.value = value
         prefs(context).edit().putBoolean("dex", value).apply()
+    }
+
+    fun setNotifications(context: Context, value: Boolean) {
+        notifications.value = value
+        prefs(context).edit().putBoolean("notifications", value).apply()
     }
 
     fun setSound(context: Context, value: Boolean) {

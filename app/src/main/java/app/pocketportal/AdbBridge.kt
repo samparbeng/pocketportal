@@ -206,6 +206,22 @@ object AdbBridge {
     }
 
     /**
+     * Gives Pocket Portal notification access itself, which the shell may do, so the
+     * user needn't find it in Settings. [onResult] runs on the worker thread.
+     */
+    fun allowNotificationAccess(context: Context, onResult: (Boolean) -> Unit) {
+        val app = context.applicationContext
+        worker.execute {
+            val ok = runCatching {
+                if (!connect(app)) return@runCatching false
+                shell(app, "cmd notification allow_listener ${HeadsetNotifications.component(app).flattenToString()}")
+                HeadsetNotifications.hasAccess(app)
+            }.onFailure { Log.w(TAG, "allow notification access failed", it) }.getOrDefault(false)
+            onResult(ok)
+        }
+    }
+
+    /**
      * Runs a program from this APK as the shell user with app_process and hands its
      * stream (stdin/stdout) to [onOpen] on the worker thread, or null if that failed.
      */

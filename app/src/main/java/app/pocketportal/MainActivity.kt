@@ -343,6 +343,8 @@ private fun MoreOptions(address: String?, running: Boolean) {
             Switch(checked = sound, enabled = !running, onCheckedChange = { MirrorState.setSound(context, it) })
         }
 
+        NotificationsOption(paired)
+
         Text("Phone screen while sharing", color = Muted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ScreenMode.entries.forEach { m ->
@@ -435,6 +437,59 @@ private fun MoreOptions(address: String?, running: Boolean) {
         OutlinedButton(onClick = {
             context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
         }) { Text("Open App info") }
+    }
+}
+
+/**
+ * "Notifications in the headset": toasts with quick reply, plus battery warnings.
+ * Can change while sharing. Needs notification access, which Pocket Portal grants
+ * itself when the Wireless debugging setup is done, else the user allows it in Settings.
+ */
+@Composable
+private fun NotificationsOption(paired: Boolean) {
+    val context = LocalContext.current
+    val on by MirrorState.notifications.collectAsStateWithLifecycle()
+    var access by remember { mutableStateOf(HeadsetNotifications.hasAccess(context)) }
+    var status by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            access = HeadsetNotifications.hasAccess(context)
+            delay(2000)
+        }
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Notifications in the headset")
+            Text(
+                "Your phone's notifications pop up in the headset, where you can reply to messages, open " +
+                    "them, or dismiss them. Low battery and charger changes show too. They're only sent " +
+                    "to a headset you've connected with your PIN.",
+                color = Muted, fontSize = 13.sp,
+            )
+        }
+        Switch(checked = on, onCheckedChange = { MirrorState.setNotifications(context, it) })
+    }
+    if (on && !access) {
+        Text(
+            "Pocket Portal needs notification access to show them. Battery warnings work without it.",
+            color = Muted, fontSize = 13.sp,
+        )
+        OutlinedButton(onClick = {
+            if (paired) {
+                status = "Allowing…"
+                AdbBridge.allowNotificationAccess(context) { ok ->
+                    status = if (ok) null else "Couldn't allow it automatically; opening Settings instead."
+                    if (!ok) context.mainExecutor.execute { context.startActivity(HeadsetNotifications.accessSettingsIntent(context)) }
+                }
+            } else {
+                context.startActivity(HeadsetNotifications.accessSettingsIntent(context))
+            }
+        }) { Text("Allow notification access") }
+        if (!paired) Text(
+            "If the switch in Settings is greyed out, use \"Allow restricted settings\" in App info (below), then try again.",
+            color = Muted, fontSize = 13.sp,
+        )
+        status?.let { Text(it, color = Accent, fontSize = 13.sp) }
     }
 }
 

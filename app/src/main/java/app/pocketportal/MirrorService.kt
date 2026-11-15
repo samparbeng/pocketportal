@@ -6,8 +6,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -106,6 +109,25 @@ class MirrorService : Service() {
     private var dexBitrate = 0
     /** DeX failed once this session; don't keep retrying. */
     private var dexFailed = false
+    /** The phone's battery as last told to the headset: percent, and whether it's charging. */
+    @Volatile private var batteryLevel = -1
+    @Volatile private var batteryCharging = false
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100).takeIf { it > 0 } ?: 100
+            val percent = if (level < 0) -1 else level * 100 / scale
+            val charging = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
+            if (percent == batteryLevel && charging == batteryCharging) return
+            batteryLevel = percent
+            batteryCharging = charging
+            server?.broadcastText(batteryMessage())
+        }
+    }
+
+    private fun batteryMessage() =
+        JSONObject().put("type", "battery").put("level", batteryLevel).put("charging", batteryCharging).toString()
+
     /** The display the input helper was last pointed at. */
     @Volatile private var inputDisplay = 0
     /** Adaptive bitrate: what the network can currently carry, between [MIN_BITRATE] and the preset's. */
@@ -243,6 +265,13 @@ class MirrorService : Service() {
         // screens that ignore remote touch (Google sign-in, permission dialogs).
         AdbBridge.startInjector(this)
 
+        // Battery level, and the phone's notifications as toasts with quick reply.
+        ContextCompat.registerReceiver(
+            this, batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        HeadsetNotifications.sink = { text -> server?.broadcastText(text) }
+        scope.launch { MirrorState.notifications.drop(1).collect { sendHello() } }
+
         // Sharing stops if the phone sleeps, and with its panel switched off nobody can
         // see it time out, so stay awake until sharing ends.
         @Suppress("DEPRECATION")
@@ -265,6 +294,9 @@ class MirrorService : Service() {
     private fun handleInput(m: JSONObject) {
         // With DeX showing, input goes to its display, at its size.
         val dexDisplay = dex?.displayId ?: -1
+        when (m.optString("t")) {
+            "reply", "open", "dismiss" -> return HeadsetNotifications.instance?.handle(m, dexDisplay) ?: Unit
+        }
         val (width, height) = if (dexDisplay >= 0) DexSession.WIDTH to DexSession.HEIGHT
         else realScreenMetrics(this).let { it.widthPixels to it.heightPixels }
         val target = maxOf(dexDisplay, 0)
@@ -317,8 +349,10 @@ class MirrorService : Service() {
                 .put("input", TouchService.instance != null || AdbBridge.injectorReady.value)
                 .put("audio", audio != null)
                 .put("rate", AudioStreamer.SAMPLE_RATE)
+                .put("notifications", MirrorState.notifications.value && HeadsetNotifications.instance != null)
                 .toString()
         )
+        if (batteryLevel >= 0) server?.broadcastText(batteryMessage())
     }
 
     private fun sendVideoConfig() {
@@ -570,6 +604,8 @@ class MirrorService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        HeadsetNotifications.sink = null
+        runCatching { unregisterReceiver(batteryReceiver) }
         if (advertising) runCatching { getSystemService(NsdManager::class.java).unregisterService(nsdListener) }
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         dex?.stop()
