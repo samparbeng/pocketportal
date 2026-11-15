@@ -15,53 +15,83 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import javax.net.ssl.SSLContext
 import kotlin.concurrent.thread
 
 /**
- * A tiny HTTP + WebSocket server: `GET /` serves the viewer page, `GET /ws?k=PIN`
- * upgrades to a WebSocket that carries JPEG frames to the headset and touch
- * events back.
+ * A tiny HTTPS + secure WebSocket server: `GET /` serves the viewer page,
+ * `GET /ws?k=PIN` upgrades to a WebSocket that carries video, sound and status
+ * to the headset and touch events back. Everything is encrypted with the
+ * phone's own certificate ([CertStore]); plain HTTP on [redirectPort] only
+ * redirects old `http://` bookmarks.
  *
- * Frames are sent latest-wins with at most [MAX_IN_FLIGHT] unacknowledged, so a
- * slow network drops frames instead of building up seconds of lag.
+ * JPEG frames are sent latest-wins with at most [MAX_IN_FLIGHT] unacknowledged,
+ * so a slow network drops frames instead of building up seconds of lag.
  */
 class MirrorServer(
     private val port: Int,
+    private val redirectPort: Int,
+    private val ssl: SSLContext,
     private val page: ByteArray,
     private val pin: () -> String,
-    private val onConnected: () -> Unit,
+    private val onConnected: (Client) -> Unit,
     private val onMessage: (String) -> Unit,
     private val onViewersChanged: (Int) -> Unit,
+    /** A viewer fell behind or just joined and needs a fresh H.264 keyframe. */
+    private val onNeedKeyframe: () -> Unit,
 ) {
-    private var serverSocket: ServerSocket? = null
+    private val sockets = CopyOnWriteArrayList<ServerSocket>()
     private val clients = CopyOnWriteArrayList<Client>()
     private val pool = Executors.newCachedThreadPool()
 
     val hasViewers: Boolean get() = clients.isNotEmpty()
+    val viewers: List<Client> get() = clients
 
     @Throws(IOException::class)
     fun start() {
-        val socket = ServerSocket().apply {
-            reuseAddress = true
-            bind(InetSocketAddress(port))
-        }
-        serverSocket = socket
-        thread(name = "pocketportal-accept", isDaemon = true) {
+        listen(ssl.serverSocketFactory.createServerSocket(), port) { handle(it) }
+        listen(ServerSocket(), redirectPort) { redirect(it) }
+    }
+
+    private fun listen(socket: ServerSocket, port: Int, serve: (Socket) -> Unit) {
+        socket.reuseAddress = true
+        socket.bind(InetSocketAddress(port))
+        sockets.add(socket)
+        thread(name = "pocketportal-accept-$port", isDaemon = true) {
             while (!socket.isClosed) {
                 val connection = try {
                     socket.accept()
                 } catch (e: IOException) {
                     break
                 }
-                pool.execute { handle(connection) }
+                pool.execute { serve(connection) }
             }
         }
     }
 
     fun stop() {
-        runCatching { serverSocket?.close() }
+        sockets.forEach { runCatching { it.close() } }
         clients.forEach { it.close() }
         pool.shutdownNow()
+    }
+
+    private fun redirect(socket: Socket) {
+        try {
+            socket.soTimeout = 10_000
+            val request = readHeaders(BufferedInputStream(socket.getInputStream())) ?: return
+            val host = request.headers["host"].orEmpty().substringBefore(':').ifEmpty { return }
+            val target = "https://$host:$port${request.target.substringBefore('?')}"
+            val out = socket.getOutputStream()
+            out.write(
+                ("HTTP/1.1 301 Moved Permanently\r\nLocation: $target\r\nContent-Length: 0\r\n" +
+                    "Connection: close\r\n\r\n").toByteArray()
+            )
+            out.flush()
+        } catch (e: IOException) {
+            Log.d(TAG, "redirect failed: ${e.message}")
+        } finally {
+            runCatching { socket.close() }
+        }
     }
 
     fun broadcastFrame(jpeg: ByteArray) = clients.forEach { it.offerFrame(jpeg) }
@@ -69,6 +99,9 @@ class MirrorServer(
     fun broadcastText(text: String) = clients.forEach { it.offerText(text) }
 
     fun broadcastAudio(chunk: ByteArray) = clients.forEach { it.offerAudio(chunk) }
+
+    fun broadcastVideo(packet: ByteArray, keyframe: Boolean) =
+        clients.forEach { if (it.h264) it.offerVideo(packet, keyframe) }
 
     private fun handle(socket: Socket) {
         try {
@@ -109,7 +142,7 @@ class MirrorServer(
         )
         out.flush()
 
-        val client = Client(socket, out)
+        val client = Client(socket, out, h264 = query["v"] == "h264")
         val given = query["k"].orEmpty().toByteArray()
         if (!MessageDigest.isEqual(given, pin().toByteArray())) {
             // Slow down guessing, then tell the page why it was refused. Wait for the
@@ -126,7 +159,7 @@ class MirrorServer(
         clients.add(client)
         onViewersChanged(clients.size)
         pool.execute { client.writerLoop() }
-        onConnected()
+        onConnected(client)
         try {
             client.readerLoop(DataInputStream(input))
         } catch (e: SocketTimeoutException) {
@@ -140,9 +173,19 @@ class MirrorServer(
         }
     }
 
-    private inner class Client(private val socket: Socket, private val out: OutputStream) {
+    inner class Client(
+        private val socket: Socket,
+        private val out: OutputStream,
+        /** The viewer can decode H.264 (WebCodecs); otherwise it gets JPEG frames. */
+        val h264: Boolean,
+    ) {
         private val lock = Object()
         private var frame: ByteArray? = null
+        // H.264 packets depend on earlier ones, so they can't be dropped one by one.
+        // When the link falls behind, the backlog is cleared and the viewer waits for
+        // the next keyframe, which [onNeedKeyframe] asks the encoder for.
+        private val video = ArrayDeque<ByteArray>()
+        private var waitingForKeyframe = true
         private val texts = ArrayDeque<String>()
         // Audio isn't latest-wins like video: every chunk plays, but a slow link
         // drops the oldest so sound never falls more than MAX_AUDIO_QUEUE behind.
@@ -156,6 +199,22 @@ class MirrorServer(
         fun offerFrame(jpeg: ByteArray) = synchronized(lock) {
             frame = jpeg
             lock.notifyAll()
+        }
+
+        fun offerVideo(packet: ByteArray, keyframe: Boolean) {
+            var needKeyframe = false
+            synchronized(lock) {
+                if (waitingForKeyframe && !keyframe) return
+                waitingForKeyframe = false
+                video.addLast(packet)
+                if (video.size > MAX_VIDEO_QUEUE) {
+                    video.clear()
+                    waitingForKeyframe = true
+                    needKeyframe = true
+                }
+                lock.notifyAll()
+            }
+            if (needKeyframe) onNeedKeyframe()
         }
 
         fun offerText(text: String) = synchronized(lock) {
@@ -177,9 +236,10 @@ class MirrorServer(
                 while (open) {
                     var text: String? = null
                     var chunk: ByteArray? = null
+                    var packet: ByteArray? = null
                     var jpeg: ByteArray? = null
                     synchronized(lock) {
-                        while (open && texts.isEmpty() && audio.isEmpty() &&
+                        while (open && texts.isEmpty() && audio.isEmpty() && video.isEmpty() &&
                             (frame == null || inFlight >= MAX_IN_FLIGHT)
                         ) lock.wait()
                         if (!open) return
@@ -187,6 +247,7 @@ class MirrorServer(
                             texts.isNotEmpty() -> text = texts.removeFirst()
                             // Sound gaps are more noticeable than a late frame.
                             audio.isNotEmpty() -> chunk = audio.removeFirst()
+                            video.isNotEmpty() -> packet = video.removeFirst()
                             else -> {
                                 jpeg = frame
                                 frame = null
@@ -196,6 +257,7 @@ class MirrorServer(
                     }
                     text?.let { send(OP_TEXT, it.toByteArray()) }
                     chunk?.let { send(OP_BINARY, it) }
+                    packet?.let { send(OP_BINARY, it) }
                     jpeg?.let { send(OP_BINARY, it) }
                 }
             } catch (e: Exception) {
@@ -322,6 +384,8 @@ class MirrorServer(
         const val MAX_IN_FLIGHT = 2
         // 40 ms chunks: half a second of sound at most.
         const val MAX_AUDIO_QUEUE = 12
+        // About half a second of 60 fps video before the backlog is dropped.
+        const val MAX_VIDEO_QUEUE = 30
         const val AUDIO_ON = """{"t":"audio","on":true}"""
         const val AUDIO_OFF = """{"t":"audio","on":false}"""
         const val MAX_MESSAGE = 1L shl 20

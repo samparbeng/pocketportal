@@ -52,7 +52,7 @@ so the app shows a "Privacy policy" link, and rebuild. (Google Sites works too.)
 |---|---|
 | Privacy policy | Your hosted URL from step 2 |
 | Ads | **No**, the app contains no ads |
-| App access | **All functionality is available without special access.** Add this note for reviewers: *"No login. To test remote viewing without a headset: tap Start sharing, then open the address shown in the app (http://&lt;phone-ip&gt;:8080) in any web browser on the same Wi-Fi and enter the PIN shown in the app. Remote touch: tap 'Turn on remote touch', agree, enable 'Pocket Portal remote touch'."* |
+| App access | **All functionality is available without special access.** Add this note for reviewers: *"No login. To test remote viewing without a headset: tap Start sharing, then open the address shown in the app (https://&lt;phone-ip&gt;:8443) in any web browser on the same Wi-Fi, accept the self-signed certificate warning (the phone signs its own certificate), and enter the PIN shown in the app. Remote touch: tap 'Turn on remote touch', agree, enable 'Pocket Portal remote touch'."* |
 | Content rating | Category **Utility, Productivity, Communication, or Other**. Answer **No** to every question (no violence, user-generated content sharing, location sharing, purchases or gambling). Expected rating: Everyone / PEGI 3. |
 | Target audience | **18 and over** (keeps the app out of the Families program; it isn't made for children) |
 | News app | No |

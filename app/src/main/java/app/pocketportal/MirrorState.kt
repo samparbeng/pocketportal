@@ -10,15 +10,26 @@ import java.net.NetworkInterface
 import java.security.SecureRandom
 
 /** How hard the phone works to encode frames, traded against Wi-Fi bandwidth. */
-enum class Quality(val label: String, val maxDimension: Int, val jpegQuality: Int, val fps: Int) {
-    Sharp("Sharp", 1920, 80, 30),
-    Balanced("Balanced", 1440, 70, 30),
-    Fast("Fast", 1024, 60, 30),
+// fps and jpegQuality apply to the JPEG fallback; bitrate and videoFps to H.264.
+enum class Quality(
+    val label: String,
+    val maxDimension: Int,
+    val jpegQuality: Int,
+    val fps: Int,
+    val bitrate: Int,
+    val videoFps: Int,
+) {
+    Sharp("Sharp", 1920, 80, 30, 10_000_000, 60),
+    Balanced("Balanced", 1440, 70, 30, 6_000_000, 60),
+    Fast("Fast", 1024, 60, 30, 3_000_000, 30),
 }
 
 /** Process-wide state shared by the UI, the capture service and the touch service. */
 object MirrorState {
-    const val PORT = 8080
+    /** Encrypted viewer (HTTPS + secure WebSocket). */
+    const val PORT = 8443
+    /** Plain HTTP, only to redirect old http:// bookmarks to [PORT]. */
+    const val REDIRECT_PORT = 8080
     /** mDNS type the Quest app browses for; keep in sync with the quest module. */
     const val SERVICE_TYPE = "_pocketportal._tcp"
 

@@ -89,7 +89,13 @@ class MirrorService : Service() {
     }
     private lateinit var quality: Quality
 
-    // Capture-thread state.
+    // Capture-thread state. The virtual display renders into exactly one surface:
+    // the H.264 encoder's when every viewer can decode it, otherwise an
+    // ImageReader whose frames are sent as JPEG.
+    private enum class Mode { JPEG, H264 }
+    private var mode = Mode.JPEG
+    private var h264Available = false
+    private var encoder: VideoEncoder? = null
     private var captureWidth = 0
     private var captureHeight = 0
     private var padded: Bitmap? = null
@@ -161,16 +167,23 @@ class MirrorService : Service() {
     private fun begin(resultCode: Int, data: Intent) {
         quality = MirrorState.quality.value
         val page = assets.open("index.html").use { it.readBytes() }
+        h264Available = VideoEncoder.isAvailable()
         server = MirrorServer(
             port = MirrorState.PORT,
+            redirectPort = MirrorState.REDIRECT_PORT,
+            ssl = CertStore.sslContext(),
             page = page,
             pin = { MirrorState.pin.value },
-            onConnected = {
+            onConnected = { client ->
                 sendHello()
-                handler.post { if (padded != null) { dirty = true; encodeAndSend() } }
+                handler.post { onViewerJoined(client) }
             },
             onMessage = { text -> TouchService.instance?.handle(JSONObject(text)) },
-            onViewersChanged = { MirrorState.viewers.value = it },
+            onViewersChanged = {
+                MirrorState.viewers.value = it
+                handler.post { chooseMode() }
+            },
+            onNeedKeyframe = { encoder?.requestKeyframe() },
         ).also { it.start() }
 
         val manager = getSystemService(MediaProjectionManager::class.java)
@@ -201,6 +214,8 @@ class MirrorService : Service() {
                 serviceName = name
                 serviceType = MirrorState.SERVICE_TYPE
                 port = MirrorState.PORT
+                // The headset app pins this certificate, so nobody else can pose as the phone.
+                CertStore.fingerprint()?.let { setAttribute("fp", it) }
             },
             NsdManager.PROTOCOL_DNS_SD, nsdListener,
         )
@@ -225,10 +240,28 @@ class MirrorService : Service() {
         )
     }
 
-    /** Fits the screen inside the quality preset's longest side, keeping both sides even for the encoder. */
+    private fun sendVideoConfig() {
+        val enc = encoder ?: return
+        val codec = enc.codecString ?: return
+        server?.broadcastText(
+            JSONObject()
+                .put("type", "video")
+                .put("codec", codec)
+                .put("width", enc.width)
+                .put("height", enc.height)
+                .toString()
+        )
+    }
+
+    /**
+     * Fits the screen inside the quality preset's longest side. Hardware H.264
+     * encoders want both sides in multiples of 16; JPEG only needs them even.
+     */
     private fun scaledSize(width: Int, height: Int): Pair<Int, Int> {
         val scale = minOf(1f, quality.maxDimension.toFloat() / maxOf(width, height))
-        return ((width * scale).toInt() and 1.inv()) to ((height * scale).toInt() and 1.inv())
+        val align = if (mode == Mode.H264) 16 else 2
+        fun fit(side: Int) = maxOf(align, ((side * scale).toInt() + align / 2) / align * align)
+        return fit(width) to fit(height)
     }
 
     private fun newReader(width: Int, height: Int) =
@@ -236,20 +269,63 @@ class MirrorService : Service() {
             setOnImageAvailableListener({ onImageAvailable(it) }, handler)
         }
 
+    private fun onViewerJoined(client: MirrorServer.Client) {
+        if (client.h264 && mode == Mode.H264) {
+            sendVideoConfig()
+            encoder?.requestKeyframe()
+        } else if (padded != null) {
+            dirty = true
+            encodeAndSend()
+        }
+    }
+
+    /** H.264 only when every viewer can decode it; one older browser drops everyone back to JPEG. */
+    private fun chooseMode() {
+        val viewers = server?.viewers ?: return
+        val wanted = if (h264Available && viewers.isNotEmpty() && viewers.all { it.h264 }) Mode.H264 else Mode.JPEG
+        if (wanted == mode) return
+        mode = wanted
+        attachSurface()
+    }
+
     /** Rotation swaps width and height; resize the virtual display so the picture isn't squashed. */
     private fun updateCaptureSize() {
-        val display = virtualDisplay ?: return
         val metrics = realScreenMetrics(this)
         val (w, h) = scaledSize(metrics.widthPixels, metrics.heightPixels)
         if (w == captureWidth && h == captureHeight) return
+        attachSurface()
+    }
+
+    /** Points the virtual display at a fresh encoder or ImageReader sized for the current screen. */
+    private fun attachSurface() {
+        val display = virtualDisplay ?: return
+        val metrics = realScreenMetrics(this)
+        val (w, h) = scaledSize(metrics.widthPixels, metrics.heightPixels)
+        val oldReader = reader
+        val oldEncoder = encoder
+        reader = null
+        encoder = null
+        val surface = if (mode == Mode.H264) {
+            val enc = try {
+                VideoEncoder(w, h, quality, handler) { packet, key -> server?.broadcastVideo(packet, key) }
+            } catch (e: Exception) {
+                Log.w(TAG, "H.264 encoder failed, staying on JPEG", e)
+                h264Available = false
+                mode = Mode.JPEG
+                return attachSurface()
+            }
+            enc.onConfigChanged = { sendVideoConfig() }
+            encoder = enc
+            enc.surface
+        } else {
+            newReader(w, h).also { reader = it }.surface
+        }
         captureWidth = w
         captureHeight = h
-        val old = reader
-        val imageReader = newReader(w, h)
-        reader = imageReader
         display.resize(w, h, metrics.densityDpi)
-        display.surface = imageReader.surface
-        old?.close()
+        display.surface = surface
+        oldReader?.close()
+        oldEncoder?.release()
     }
 
     /**
@@ -309,7 +385,7 @@ class MirrorService : Service() {
         val stop = PendingIntent.getService(
             this, 1, Intent(this, MirrorService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
         )
-        val address = localIpAddress()?.let { "http://$it:${MirrorState.PORT}" } ?: "Connect to Wi-Fi"
+        val address = localIpAddress()?.let { "https://$it:${MirrorState.PORT}" } ?: "Connect to Wi-Fi"
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle("Sharing screen to headset")
@@ -331,6 +407,8 @@ class MirrorService : Service() {
         handler.removeCallbacksAndMessages(null)
         virtualDisplay?.release()
         reader?.close()
+        encoder?.release()
+        encoder = null
         projection?.unregisterCallback(projectionCallback)
         projection?.stop()
         projection = null

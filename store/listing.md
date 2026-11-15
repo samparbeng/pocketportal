@@ -39,11 +39,11 @@ CONTROL YOUR PHONE FROM VR
 PRIVATE BY DESIGN
 • Your screen travels only between your phone and your own headset, over your Wi-Fi
 • No accounts, no cloud servers, no ads, no tracking
-• A 6-digit PIN keeps others on your network out
+• Encrypted connection, plus a 6-digit PIN that keeps others on your network out
 • Nothing is recorded or saved
 
 BUILT FOR SPEED
-• Low-latency streaming at up to 30 frames per second
+• Hardware H.264 video: sharp text and smooth motion at up to 60 frames per second
 • Sharp, Balanced and Fast quality presets to suit your Wi-Fi
 • Works in portrait and landscape
 • Hear your phone's music, videos and games in the headset too (optional)

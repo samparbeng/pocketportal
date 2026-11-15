@@ -11,8 +11,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.net.Inet4Address
 
-data class Phone(val name: String, val host: String, val port: Int) {
-    val url: String get() = "http://$host:$port/"
+/**
+ * A phone sharing its screen. [fingerprint] is the SHA-256 of its TLS certificate
+ * as advertised over mDNS, or null for an address typed by hand.
+ */
+data class Phone(val name: String, val host: String, val port: Int, val fingerprint: String? = null) {
+    val url: String get() = "https://$host:$port/"
 }
 
 /**
@@ -95,7 +99,8 @@ class PhoneFinder(context: Context) {
                     val host = info.host
                     // The WebView URL needs IPv4; link-local IPv6 would need a zone id.
                     if (host is Inet4Address) {
-                        found[info.serviceName] = Phone(info.serviceName, host.hostAddress!!, info.port)
+                        val fingerprint = info.attributes["fp"]?.let { String(it) }
+                        found[info.serviceName] = Phone(info.serviceName, host.hostAddress!!, info.port, fingerprint)
                         publish()
                     }
                     resolveNext()

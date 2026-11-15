@@ -9,12 +9,15 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.net.http.SslError
 import android.webkit.JavascriptInterface
+import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import java.security.MessageDigest
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -74,7 +77,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 private val Accent = Color(0xFF4FA3FF)
 private val Muted = Color(0xFFA9B4C0)
 private val Panel = Color(0xFF1C232B)
-private const val DEFAULT_PORT = 8080
+private const val DEFAULT_PORT = 8443
+private const val LEGACY_PORT = 8080
 
 class MainActivity : ComponentActivity() {
 
@@ -127,6 +131,7 @@ private fun App(finder: PhoneFinder) {
     var pinError by remember { mutableStateOf<String?>(null) }
 
     fun pinKey(p: Phone) = "pin:${p.host}"
+    fun certKey(p: Phone) = "cert:${p.host}"
     fun connect(p: Phone) {
         val saved = prefs.getString(pinKey(p), null)
         if (saved != null) {
@@ -145,6 +150,10 @@ private fun App(finder: PhoneFinder) {
             Viewer(
                 phone = current,
                 pin = currentPin,
+                // A fingerprint advertised over mDNS wins (the phone renews its certificate yearly);
+                // otherwise use the one remembered from the first connection.
+                trustedFingerprint = current.fingerprint ?: prefs.getString(certKey(current), null),
+                onTrust = { prefs.edit().putString(certKey(current), it).apply() },
                 onClose = { phone = null; pin = null },
                 onWrongPin = {
                     prefs.edit().remove(pinKey(current)).apply()
@@ -292,23 +301,36 @@ private fun PhoneList(finder: PhoneFinder, onOpen: (Phone) -> Unit) {
     }
 }
 
-/** Accepts "192.168.1.20", "192.168.1.20:8080" or a full http:// address. */
+/** Accepts "192.168.1.20", "192.168.1.20:8443" or a full https:// address. */
 private fun parseAddress(text: String): Phone? {
     val trimmed = text.trim().removePrefix("http://").removePrefix("https://").substringBefore('/').substringBefore('#')
     if (trimmed.isEmpty()) return null
     val host = trimmed.substringBefore(':')
-    val port = trimmed.substringAfter(':', "").ifEmpty { "$DEFAULT_PORT" }.toIntOrNull() ?: return null
+    // 8080 was the unencrypted port of earlier versions; the phone now listens on 8443.
+    val port = trimmed.substringAfter(':', "").ifEmpty { "$DEFAULT_PORT" }.toIntOrNull()
+        ?.let { if (it == LEGACY_PORT) DEFAULT_PORT else it } ?: return null
     val valid = host.matches(Regex("""\d{1,3}(\.\d{1,3}){3}""")) || host.matches(Regex("""[A-Za-z0-9.-]+"""))
     return if (valid && port in 1..65535) Phone(host, host, port) else null
 }
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun Viewer(phone: Phone, pin: String, onClose: () -> Unit, onWrongPin: () -> Unit) {
+private fun Viewer(
+    phone: Phone,
+    pin: String,
+    trustedFingerprint: String?,
+    onTrust: (String) -> Unit,
+    onClose: () -> Unit,
+    onWrongPin: () -> Unit,
+) {
     BackHandler(onBack = onClose)
     var webView by remember { mutableStateOf<WebView?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // A certificate that doesn't match the one this phone used before.
+    var unexpectedCert by remember { mutableStateOf<String?>(null) }
     val wrongPin by rememberUpdatedState(onWrongPin)
+    val trust by rememberUpdatedState(onTrust)
+    val trusted by rememberUpdatedState(trustedFingerprint)
     // The viewer page calls this instead of showing its own PIN box when it runs in this app.
     val bridge = remember { QuestBridge { wrongPin() } }
 
@@ -345,6 +367,20 @@ private fun Viewer(phone: Phone, pin: String, onClose: () -> Unit, onWrongPin: (
                             override fun onReceivedError(view: WebView, request: WebResourceRequest, err: WebResourceError) {
                                 if (request.isForMainFrame) error = err.description.toString()
                             }
+
+                            // The phone signs its own certificate, so the WebView always flags it.
+                            // Accept it only when it matches the fingerprint the phone advertised
+                            // or the one it used the first time (trust on first use).
+                            override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, err: SslError) {
+                                val seen = err.certificate.x509Certificate?.let { sha256Hex(it.encoded) }
+                                val expected = trusted
+                                when {
+                                    seen == null -> handler.cancel()
+                                    expected == null -> { trust(seen); handler.proceed() }
+                                    seen.equals(expected, ignoreCase = true) -> handler.proceed()
+                                    else -> { handler.cancel(); unexpectedCert = seen }
+                                }
+                            }
                         }
                         addJavascriptInterface(bridge, "PocketPortalApp")
                         // The page reads the PIN from the #fragment, which never leaves the headset.
@@ -354,7 +390,34 @@ private fun Viewer(phone: Phone, pin: String, onClose: () -> Unit, onWrongPin: (
                 },
                 onRelease = { it.destroy() },
             )
-            error?.let { message ->
+            unexpectedCert?.let { seen ->
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF101418))
+                        .padding(32.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("Security code changed", fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "This device's security code doesn't match the one ${phone.name} used before. " +
+                            "That happens after reinstalling Pocket Portal on the phone, but it could also mean " +
+                            "another device is pretending to be your phone.\n\nCompare with the security code " +
+                            "shown in Pocket Portal on the phone:",
+                        color = Muted,
+                    )
+                    Text(
+                        seen.take(16).chunked(4).joinToString(" "),
+                        fontSize = 22.sp, fontFamily = FontFamily.Monospace,
+                    )
+                    Button(onClick = { trust(seen); unexpectedCert = null; webView?.reload() }) {
+                        Text("They match, connect", fontSize = 18.sp)
+                    }
+                    TextButton(onClick = onClose) { Text("Back to phones", fontSize = 18.sp) }
+                }
+            }
+            error?.takeIf { unexpectedCert == null }?.let { message ->
                 Column(
                     Modifier
                         .fillMaxSize()
@@ -385,3 +448,6 @@ private class QuestBridge(private val onWrongPin: () -> Unit) {
         main.post(onWrongPin)
     }
 }
+
+private fun sha256Hex(bytes: ByteArray): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

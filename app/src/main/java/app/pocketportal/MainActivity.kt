@@ -214,13 +214,26 @@ private fun MirrorScreen() {
             } else {
                 Text("Open Pocket Portal on the headset and pick this phone, or go to this address in the headset's browser:", color = Muted)
                 Text(
-                    "http://$address:${MirrorState.PORT}",
-                    fontSize = 22.sp, fontFamily = FontFamily.Monospace, color = Accent,
+                    "https://$address:${MirrorState.PORT}",
+                    fontSize = 20.sp, fontFamily = FontFamily.Monospace, color = Accent,
+                )
+                Text(
+                    "The browser warns that the connection isn't private because the phone signs its own " +
+                        "certificate. Choose Advanced → Proceed. The Pocket Portal headset app checks the " +
+                        "certificate for you and skips this.",
+                    color = Muted, fontSize = 13.sp,
                 )
                 Text("PIN", color = Muted)
                 Text(pin, fontSize = 32.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                 OutlinedButton(onClick = { MirrorState.regeneratePin(context) }, enabled = !running) {
                     Text("New PIN")
+                }
+                val fingerprint = remember(running) { CertStore.fingerprint() }
+                fingerprint?.let {
+                    Text(
+                        "Security code: " + it.take(16).chunked(4).joinToString(" "),
+                        color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace,
+                    )
                 }
             }
         }

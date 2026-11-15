@@ -148,11 +148,70 @@
     connect();
   });
 
-  function connect() {
+  // H.264 video, decoded by the headset's hardware through WebCodecs. Browsers only
+  // offer WebCodecs on secure (HTTPS) pages; without it the phone sends JPEG frames.
+  const video = {
+    supported: null, failed: false, decoder: null, waitForKey: true,
+    async check() {
+      if (this.supported !== null) return this.supported;
+      this.supported = false;
+      if (window.isSecureContext && 'VideoDecoder' in window) {
+        try {
+          const r = await VideoDecoder.isConfigSupported({ codec: 'avc1.42e01f', optimizeForLatency: true });
+          this.supported = !!r.supported;
+        } catch {}
+      }
+      return this.supported;
+    },
+    configure(msg) {
+      if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
+      this.decoder = new VideoDecoder({ output: f => this.draw(f), error: e => this.fail(e) });
+      this.decoder.configure({
+        codec: msg.codec, codedWidth: msg.width, codedHeight: msg.height,
+        optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware',
+      });
+      this.waitForKey = true;
+    },
+    decode(buffer) {
+      const d = this.decoder;
+      if (!d || d.state !== 'configured') return;
+      const bytes = new Uint8Array(buffer);
+      const key = (bytes[1] & 1) === 1;
+      if (this.waitForKey && !key) return;
+      this.waitForKey = false;
+      let timestamp = 0;
+      for (let i = 2; i < 10; i++) timestamp = timestamp * 256 + bytes[i];
+      try {
+        d.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp, data: bytes.subarray(10) }));
+      } catch (e) { this.fail(e); }
+    },
+    draw(frame) {
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth; canvas.height = frame.displayHeight; layout();
+      }
+      ctx.drawImage(frame, 0, 0);
+      frame.close();
+    },
+    // If this headset can't decode the stream after all, reconnect and ask for JPEG.
+    fail(e) {
+      console.warn('H.264 decoding failed, falling back to JPEG', e);
+      this.failed = true;
+      if (ws) ws.close();
+    },
+    reset() {
+      if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
+      this.decoder = null;
+    },
+  };
+
+  async function connect() {
     clearTimeout(retry);
     if (!pin) return askPin();
     setStatus('Connecting…');
-    ws = new WebSocket(`ws://${location.host}/ws?k=${encodeURIComponent(pin)}`);
+    const h264 = !video.failed && await video.check();
+    video.reset();
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${scheme}://${location.host}/ws?k=${encodeURIComponent(pin)}${h264 ? '&v=h264' : ''}`);
     ws.binaryType = 'arraybuffer';
     // The phone only says hello after the PIN checks out, so that's when it's worth saving.
     let accepted = false, opened = false;
@@ -168,11 +227,16 @@
           if (sound.muted) send({ t: 'audio', on: false });
           sound.start();
           sound.label();
+        } else if (msg.type === 'video') {
+          video.configure(msg);
         }
         return;
       }
       const data = e.data, socket = ws;
-      if (new Uint8Array(data, 0, 1)[0] === 0x01) return sound.play(data);
+      // First byte: 0x01 sound, 0x02 H.264, anything else is a JPEG (0xFF).
+      const kind = new Uint8Array(data, 0, 1)[0];
+      if (kind === 0x01) return sound.play(data);
+      if (kind === 0x02) return video.decode(data);
       // Decode in arrival order, then ack so the phone sends the next frame.
       drawing = drawing.then(async () => {
         try {
